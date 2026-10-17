@@ -1,0 +1,17 @@
+{
+  "name": "@beer-die/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@beer-die/core": "*",
+    "@hono/node-server": "^2.1.5",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.13",
+    "postgres": "^3.4.9"
+  }
+}
