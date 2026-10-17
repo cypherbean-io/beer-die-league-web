@@ -1,0 +1,8 @@
+# Docs and agent config are hand-formatted.
+**/*.md
+.claude/
+.github/
+
+package-lock.json
+**/dist/
+**/.expo/

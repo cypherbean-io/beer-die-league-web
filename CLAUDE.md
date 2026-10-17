@@ -26,24 +26,30 @@ it.
 
 <!-- The highest-value lines in this file. Claude cannot guess these. -->
 
-> **Planned, not yet working.** These come from SPEC.md §3.9 and §6 and will work once
-> delivery slice 1 (the workspace scaffold) lands. Delete this note when they do.
-
 | Task | Command |
 | --- | --- |
 | Install | `npm install` |
-| Services (dev/test) | `docker compose up -d --wait db mailpit`, then `docker compose run --rm migrate` |
-| Dev server | `npm run dev` (API + Expo web) |
+| Services (dev/test) | `docker compose up -d --wait db mailpit` |
+| Dev server | `npm run dev`: API on `:3000`, Expo web on `http://localhost:8081`, which proxies `/api` to the API |
 | Test (all) | `npm test` (core unit tests + API integration tests; needs `db` running) |
 | Test (single file) | `npx vitest run <path/to/file.test.ts>` |
-| E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` |
-| Lint | `npm run lint` |
-| Typecheck | `npm run typecheck` |
-| Build | `npm run build` (`expo export --platform web`; the API has no build step) |
-| Verify (all checks) | `npm run verify` |
-| New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL |
-| Bootstrap a league | `npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` |
-| Dev sign-in codes | Mailpit UI at `http://localhost:8025` |
+| Lint | `npm run lint` (ESLint, then `prettier --check`) |
+| Format | `npm run format` |
+| Typecheck | `npm run typecheck` (root scripts, then every workspace) |
+| Build | `npm run build` (`expo export --platform web` into `apps/app/dist`; the API has no build step) |
+| Verify (all checks) | `npm run verify`: services up, then typecheck, lint, test, and build |
+
+> **Not wired yet.** These come from SPEC.md and land in later delivery slices. Move each
+> row into the table above once it works.
+>
+> | Task | Command | Lands in |
+> | --- | --- | --- |
+> | Migrate | `docker compose run --rm migrate`, after the services are up | slice 2 (first table) |
+> | New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL | slice 2 |
+> | Bootstrap a league | `npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` | slice 2 |
+> | Dev sign-in codes | Mailpit UI at `http://localhost:8025` (Mailpit already runs; nothing sends mail yet) | slice 2 |
+> | E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` | slice 8 |
+> | Full `verify` | SPEC.md §6: the whole Compose stack plus E2E | slice 8 |
 
 Prefer running a single test file over the whole suite while iterating.
 
@@ -152,7 +158,11 @@ Prefer running a single test file over the whole suite while iterating.
   | --- | --- |
   | API | hono, @hono/node-server, drizzle-orm, postgres, zod, nodemailer |
   | App | expo, expo-router, react-native-web, react-dom, @tanstack/react-query |
-  | Dev | typescript, drizzle-kit, vitest, @playwright/test, eslint, prettier |
+  | App (Expo peers, at the versions in Expo's `bundledNativeModules.json`) | react, react-native, expo-constants, expo-linking, react-native-screens, react-native-safe-area-context, @expo/metro-runtime |
+  | Dev | typescript, drizzle-kit, vitest, @playwright/test, eslint, prettier, typescript-eslint, @eslint/js, @types/node, @types/react |
+
+  `typescript` is pinned to `~6.0` because typescript-eslint supports only `<6.1`.
+  Don't bump it to 7 until typescript-eslint supports it.
 
 - Do not edit `.github/workflows/**` or `.claude/**` without an explicit request.
 

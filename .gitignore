@@ -13,3 +13,12 @@ plans/
 *.pem
 *.key
 secrets/
+
+# --- Node / Expo ---
+node_modules/
+dist/
+.expo/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/

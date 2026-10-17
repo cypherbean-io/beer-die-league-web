@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "name": "Beer Die League",
+    "slug": "beer-die-league",
+    "scheme": "beerdie",
+    "web": {
+      "output": "single"
+    },
+    "plugins": ["expo-router"]
+  }
+}

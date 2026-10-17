@@ -1,0 +1,31 @@
+{
+  "name": "beer-die-league-web",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "workspaces": [
+    "packages/core",
+    "apps/api",
+    "apps/app"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.ts",
+    "test": "vitest run",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "tsc -p . && npm run typecheck --workspaces",
+    "build": "npm run build -w apps/app",
+    "verify": "docker compose up -d --wait db mailpit && npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.5"
+  }
+}
