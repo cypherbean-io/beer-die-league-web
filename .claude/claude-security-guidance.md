@@ -10,8 +10,11 @@
 - TODO: point at your data-classification doc and name the fields that must be redacted.
 
 ## Authorization
-- TODO: state the authorization invariant, e.g. "every route under /admin calls
-  requireRole('admin') before any data access" or "object lookups scope by tenant".
+- Only `requireSession` (apps/api/src/auth/middleware.ts) reads the session cookie or the
+  `Authorization` header. A route or helper that reads either directly bypasses the rule
+  `csrfGuard` relies on (bearer present → cookie ignored) and reopens CSRF.
+- Routes that change state use POST, PUT, PATCH, or DELETE, never GET. `csrfGuard` checks
+  only those methods, and `SameSite=Lax` sends the cookie on cross-site GET navigations.
 
 ## Cryptography
 - Token and signature comparison uses a constant-time function, never `===` or `==`.
