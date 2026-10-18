@@ -716,6 +716,12 @@ const LEAGUE_ROUTES: Route[] = [
     commissioner: false,
     query: '?scope=combined',
   },
+  {
+    method: 'GET',
+    path: '/api/leagues/:leagueId/stats/partnerships',
+    commissioner: false,
+    query: '?scope=combined',
+  },
 ];
 
 function fill(path: string, ids: Ids): string {

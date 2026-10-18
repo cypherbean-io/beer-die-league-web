@@ -405,3 +405,28 @@ export type PlayerStatsResponse = z.infer<typeof PlayerStatsResponse>;
 
 export const PlayerStatResponse = z.strictObject({ player: PlayerStats });
 export type PlayerStatResponse = z.infer<typeof PlayerStatResponse>;
+
+export const PartnershipStatsQuery = z.strictObject({ scope: StatsScope });
+export type PartnershipStatsQuery = z.input<typeof PartnershipStatsQuery>;
+
+const Partner = z.strictObject({ membershipId: z.uuid(), displayName: z.string() });
+
+// Two players' line in a scope from the confirmed games they played on the same side, subs
+// included (SPEC §3.7). Points (sink points included) and sinks are the pair's combined
+// totals. The players are in pairKey order.
+export const PartnershipStats = z.strictObject({
+  players: z.tuple([Partner, Partner]),
+  gamesPlayed: z.int(),
+  wins: z.int(),
+  losses: z.int(),
+  winPct: z.number(),
+  points: z.int(),
+  sinks: z.int(),
+});
+export type PartnershipStats = z.infer<typeof PartnershipStats>;
+
+// Every pair with a counted game in the scope, by wins, then points, then names.
+export const PartnershipStatsResponse = z.strictObject({
+  partnerships: z.array(PartnershipStats),
+});
+export type PartnershipStatsResponse = z.infer<typeof PartnershipStatsResponse>;

@@ -57,6 +57,13 @@
       "when": 1792359960886,
       "tag": "0007_counted_results",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792361263803,
+      "tag": "0008_counted_results_partner",
+      "breakpoints": true
     }
   ]
 }
