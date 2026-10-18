@@ -30,5 +30,13 @@
   },
   "allowScripts": {
     "esbuild": false
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": ">=0.25.0"
+    },
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
   }
 }
