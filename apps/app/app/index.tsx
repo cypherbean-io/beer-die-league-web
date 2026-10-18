@@ -71,6 +71,9 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
           {rules.sinkEndsGame ? ' A sink ends the game.' : ''}
         </Text>
       )}
+      <Link href="/record-game" testID="record-game-link" style={styles.link}>
+        Record game
+      </Link>
       <Link href="/members" testID="members-link" style={styles.link}>
         Members
       </Link>

@@ -665,6 +665,31 @@ const LEAGUE_ROUTES: Route[] = [
   { method: 'POST', path: '/api/leagues/:leagueId/invites', commissioner: true, body: {} },
   { method: 'GET', path: '/api/leagues/:leagueId/invites', commissioner: true },
   { method: 'DELETE', path: '/api/leagues/:leagueId/invites/:iid', commissioner: true },
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/games',
+    commissioner: false,
+    body: {
+      idempotencyKey: '0199f3a2-5c1e-7a00-8000-0000000000ff',
+      kind: 'exhibition',
+      playedAt: '2026-10-18T11:30:00.000Z',
+      sides: {
+        A: {
+          players: [
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000a', points: 6, sinks: 0 },
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000b', points: 5, sinks: 0 },
+          ],
+        },
+        B: {
+          players: [
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000c', points: 5, sinks: 0 },
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000d', points: 4, sinks: 0 },
+          ],
+        },
+      },
+      winner: 'A',
+    },
+  },
 ];
 
 function fill(path: string, ids: Ids): string {
