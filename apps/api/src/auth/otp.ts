@@ -32,7 +32,7 @@ function codeHmac(secret: string, email: string, code: string): string {
 
 // Find-or-create in one statement, so known and unknown emails do the same work (and fall in
 // the same timing class). The no-op update makes RETURNING yield the existing row.
-async function findOrCreateUser(tx: Tx, email: string, now: Date): Promise<string> {
+export async function findOrCreateUser(tx: Tx, email: string, now: Date): Promise<string> {
   const [user] = await tx
     .insert(users)
     .values({ email, createdAt: now })

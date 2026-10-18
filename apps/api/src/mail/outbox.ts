@@ -4,7 +4,7 @@ import { deriveKey } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
 import { emailOutbox, users } from '../db/schema.ts';
 import { type Log, safeErrorFields } from '../log.ts';
-import { renderEmail, SENSITIVE_TEMPLATES } from './templates.ts';
+import { renderEmail } from './templates.ts';
 
 export type MailMessage = { from: string; to: string; subject: string; text: string };
 export type MailTransport = { sendMail(message: MailMessage): Promise<unknown> };
@@ -94,7 +94,9 @@ export async function drainOutbox(
   });
 
   for (const row of claimed) {
-    const wipe = SENSITIVE_TEMPLATES.has(row.template) ? { params: {} } : {};
+    // Params are needed only to render the mail. Once a row is terminal they are wiped, so
+    // a sealed code or a display name doesn't outlive the message.
+    const wipe = { params: {} };
     const rendered = row.to
       ? renderEmail(row.template, row.params, { key, now })
       : ({ drop: 'NO_RECIPIENT' } as const);

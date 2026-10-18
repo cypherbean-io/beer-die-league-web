@@ -2,10 +2,12 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Clock } from '../clock.ts';
 import type { Db } from '../db/client.ts';
-import { ApiError } from '../http.ts';
+import { type Actor, resolveMembership } from '../domain/membership.ts';
+import { ApiError, idParam } from '../http.ts';
 import { resolveSession, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
 
 export type AuthEnv = { Variables: { auth?: SessionAuth } };
+export type LeagueEnv = { Variables: { auth?: SessionAuth; membership?: Actor } };
 
 export const SESSION_COOKIE = 'session';
 
@@ -69,6 +71,22 @@ export function requireSession(deps: { db: Db; clock: Clock }): MiddlewareHandle
     });
     if (!auth) throw unauthenticated;
     c.set('auth', auth);
+    await next();
+  };
+}
+
+// Tenancy: resolves the caller's approved membership for `:leagueId`. Non-members, pending
+// members, and unknown leagues all get the same 404, so a league's existence never leaks.
+// Runs after requireSession. Role checks happen in the domain layer.
+export function requireMembership(deps: { db: Db }): MiddlewareHandler<LeagueEnv> {
+  return async (c, next) => {
+    const leagueId = idParam(c, 'leagueId');
+    const membership = await resolveMembership(deps.db, {
+      userId: c.get('auth')!.userId,
+      leagueId,
+    });
+    if (!membership) throw new ApiError(404, 'NOT_FOUND', 'Not found');
+    c.set('membership', membership);
     await next();
   };
 }

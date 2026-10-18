@@ -41,13 +41,13 @@ it.
 | Typecheck | `npm run typecheck` (root scripts, then every workspace) |
 | Build | `npm run build` (`expo export --platform web` into `apps/app/dist`; the API has no build step) |
 | Verify (all checks) | `npm run verify`: services up, then typecheck, lint, test, and build |
+| Bootstrap a league | `DATABASE_URL=postgres://postgres@127.0.0.1:5432/beerdie npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` (after Migrate). Prints the new ids only. `promote-commissioner --league-id … --email …` recovers a league with no commissioner. |
 
 > **Not wired yet.** These come from SPEC.md and land in later delivery slices. Move each
 > row into the table above once it works.
 >
 > | Task | Command | Lands in |
 > | --- | --- | --- |
-> | Bootstrap a league | `npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` | slice 2 |
 > | E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` | slice 8 |
 > | Full `verify` | SPEC.md §6: the whole Compose stack plus E2E | slice 8 |
 
