@@ -43,6 +43,13 @@
       "when": 1792342458045,
       "tag": "0005_games",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792356491658,
+      "tag": "0006_confirmed_revision",
+      "breakpoints": true
     }
   ]
 }

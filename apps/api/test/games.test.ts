@@ -4,6 +4,8 @@ import {
   ErrorBody,
   type Game,
   GameResponse,
+  INBOX_MAX,
+  InboxResponse,
   JoinResponse,
   type SubmitGameBody,
 } from '@beer-die/core';
@@ -140,7 +142,15 @@ async function submitted(t: League, as: Caller, body: unknown): Promise<Game> {
   return GameResponse.parse(await res.json()).game;
 }
 
-async function rows(table: 'games' | 'game_revisions' | 'revision_players' | 'confirmations') {
+type TableName =
+  | 'games'
+  | 'game_revisions'
+  | 'revision_players'
+  | 'confirmations'
+  | 'audit_events'
+  | 'email_outbox';
+
+async function rows(table: TableName) {
   const [row] = await api.db.execute<{ n: number }>(
     sql`select count(*)::int as n from ${sql.identifier(table)}`,
   );
@@ -149,6 +159,70 @@ async function rows(table: 'games' | 'game_revisions' | 'revision_players' | 'co
 
 function patchLeague(t: League, what: 'rules' | 'settings', body: unknown) {
   return call('PATCH', `/api/leagues/${t.leagueId}/${what}`, { as: t.commissioner, body });
+}
+
+function confirm(
+  t: League,
+  as: Caller,
+  gameId: string,
+  revisionId: string,
+  body: unknown = {},
+): Promise<Response> {
+  return call(
+    'POST',
+    `/api/leagues/${t.leagueId}/games/${gameId}/revisions/${revisionId}/confirm`,
+    { as, body },
+  );
+}
+
+// Confirms the game's open revision as shown in `g`.
+async function confirmed(t: League, as: Caller, g: Game): Promise<Game> {
+  const res = await confirm(t, as, g.id, g.openRevision!.id);
+  expect(res.status).toBe(200);
+  return GameResponse.parse(await res.json()).game;
+}
+
+async function inbox(t: League, as: Caller): Promise<Game[]> {
+  const res = await call('GET', `/api/leagues/${t.leagueId}/inbox`, { as });
+  expect(res.status).toBe(200);
+  return InboxResponse.parse(await res.json()).games;
+}
+
+// The revision stats read for this game, or null while it counts for nothing.
+async function countedRevision(gameId: string): Promise<string | null> {
+  const [row] = await api.db.execute<{ id: string | null }>(
+    sql`select confirmed_revision_id as id from games where id = ${gameId}`,
+  );
+  return row!.id;
+}
+
+async function storedStatus(gameId: string): Promise<string> {
+  const [row] = await api.db.execute<{ status: string }>(
+    sql`select status from games where id = ${gameId}`,
+  );
+  return row!.status;
+}
+
+const confirmationsOf = (g: Game) =>
+  (g.openRevision ?? g.confirmedRevision)!.players.map((p) => p.confirmation);
+
+// Holds the game's row lock until `n` requests are queued behind it, so they run back to
+// back against the same state.
+async function raceOn(gameId: string, requests: () => Array<Promise<Response>>) {
+  let racing: Promise<Response[]> | undefined;
+  await api.db.transaction(async (tx) => {
+    await tx.execute(sql`select 1 from games where id = ${gameId} for update`);
+    const started = requests();
+    racing = Promise.all(started);
+    await waitForLockWaiters(api.db, started.length);
+  });
+  const responses = await racing!;
+  return Promise.all(
+    responses.map(async (r) => ({
+      status: r.status,
+      game: GameResponse.parse(await r.json()).game,
+    })),
+  );
 }
 
 describe('submitting an exhibition game', () => {
@@ -211,6 +285,7 @@ describe('submitting an exhibition game', () => {
           },
         ],
       },
+      confirmedRevision: null,
     });
     expect(await rows('games')).toBe(1);
     expect(await rows('confirmations')).toBe(1);
@@ -559,5 +634,343 @@ describe('idempotency', () => {
     expect(await rows('game_revisions')).toBe(1);
     expect(await rows('revision_players')).toBe(4);
     expect(await rows('confirmations')).toBe(1);
+  });
+});
+
+describe('confirming a revision', () => {
+  it('leaves the game uncounted while fewer than four players have confirmed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    await confirmed(t, t.bo.caller, g);
+    const afterCy = await confirmed(t, t.cy.caller, g);
+
+    expect(afterCy).toMatchObject({ status: 'pending', confirmedRevision: null });
+    expect(confirmationsOf(afterCy)).toEqual(['player', 'player', 'player', null]);
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  it('confirms the game, so it counts, when the fourth player confirms', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+
+    const afterDi = await confirmed(t, t.di.caller, g);
+
+    expect(afterDi).toEqual({
+      ...g,
+      status: 'confirmed',
+      windowExpiresAt: null,
+      openRevision: null,
+      confirmedRevision: {
+        ...g.openRevision,
+        status: 'confirmed',
+        players: g.openRevision!.players.map((p) => ({ ...p, confirmation: 'player' })),
+      },
+    });
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it('treats a repeated confirmation as a no-op', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const first = await confirmed(t, t.bo.caller, g);
+
+    const again = await confirmed(t, t.bo.caller, g);
+
+    expect(again).toEqual(first);
+    expect(await rows('confirmations')).toBe(2);
+  });
+
+  it("treats the submitter's confirmation as already given", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const again = await confirmed(t, t.ana.caller, g);
+
+    expect(again).toEqual(g);
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('answers a repeated final confirmation with the confirmed game', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const final = await confirmed(t, t.di.caller, g);
+
+    const again = await confirmed(t, t.di.caller, g);
+
+    expect(again).toEqual(final);
+  });
+
+  it('refuses a member who did not play with 403, even a commissioner', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const g = await submitted(
+      t,
+      t.bo.caller,
+      game(t, {
+        sides: {
+          A: { players: [line(ed, 6), line(t.bo, 5)] },
+          B: { players: [line(t.cy, 5), line(t.di, 4)] },
+        },
+      }),
+    );
+
+    const res = await confirm(t, t.ana.caller, g.id, g.openRevision!.id);
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('gives 404 for a revision that belongs to a different game', async () => {
+    const t = await table();
+    const first = await submitted(t, t.ana.caller, game(t));
+    const second = await submitted(t, t.ana.caller, game(t));
+
+    const res = await confirm(t, t.bo.caller, first.id, second.openRevision!.id);
+
+    expect(res.status).toBe(404);
+    expect(await rows('confirmations')).toBe(2);
+  });
+
+  it.each([
+    ['an unknown game id', randomUUID()],
+    ['a malformed game id', 'not-a-uuid'],
+  ])('gives 404 for %s', async (_label, gameId) => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await confirm(t, t.bo.caller, gameId, g.openRevision!.id);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('accepts the game and revision ids in upper case', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await confirm(t, t.bo.caller, g.id.toUpperCase(), g.openRevision!.id.toUpperCase());
+
+    expect(res.status).toBe(200);
+    expect(confirmationsOf(GameResponse.parse(await res.json()).game)).toEqual([
+      'player',
+      'player',
+      null,
+      null,
+    ]);
+  });
+
+  it('rejects a body with unknown keys with 422 VALIDATION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await confirm(t, t.bo.caller, g.id, g.openRevision!.id, { points: 11 });
+
+    expect(res.status).toBe(422);
+    expect((await errorOf(res)).code).toBe('VALIDATION');
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('keeps a rule-breaking revision uncounted after all four confirm while its review is pending', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+
+    const afterDi = await confirmed(t, t.di.caller, g);
+
+    expect(afterDi).toMatchObject({
+      status: 'pending',
+      confirmedRevision: null,
+      openRevision: { status: 'open', overrideStatus: 'requested' },
+    });
+    expect(confirmationsOf(afterDi)).toEqual(['player', 'player', 'player', 'player']);
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+});
+
+describe('concurrent confirmations', () => {
+  it('confirms the game exactly once when the last two confirmations race', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    const [audit, outbox] = [await rows('audit_events'), await rows('email_outbox')];
+    const rid = g.openRevision!.id;
+
+    const results = await raceOn(g.id, () => [
+      confirm(t, t.cy.caller, g.id, rid),
+      confirm(t, t.di.caller, g.id, rid),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    // The one that ran second saw all four confirmations and made the transition.
+    expect(results.map((r) => r.game.status).toSorted()).toEqual(['confirmed', 'pending']);
+    expect(await countedRevision(g.id)).toBe(rid);
+    expect(await rows('confirmations')).toBe(4);
+    expect(await rows('audit_events')).toBe(audit);
+    expect(await rows('email_outbox')).toBe(outbox);
+  });
+
+  it("records one confirmation when a player's final confirmation races itself", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const rid = g.openRevision!.id;
+
+    const results = await raceOn(g.id, () => [
+      confirm(t, t.di.caller, g.id, rid),
+      confirm(t, t.di.caller, g.id, rid),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    expect(results[0]!.game).toEqual(results[1]!.game);
+    expect(results[0]!.game.status).toBe('confirmed');
+    expect(await rows('confirmations')).toBe(4);
+  });
+});
+
+describe('the confirmation window', () => {
+  it('accepts a confirmation 1 s before the window closes', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY - SECOND);
+
+    const afterBo = await confirmed(t, t.bo.caller, g);
+
+    expect(confirmationsOf(afterBo)).toEqual(['player', 'player', null, null]);
+  });
+
+  it('refuses the final confirmation with 409 once the window has closed, so the game never counts', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    clock.advance(7 * DAY);
+
+    const res = await confirm(t, t.di.caller, g.id, g.openRevision!.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('confirmations')).toBe(3);
+  });
+
+  it('answers a repeated confirmation after the window closes with the expired game', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    const again = await confirmed(t, t.ana.caller, g);
+
+    expect(again).toMatchObject({
+      status: 'expired',
+      windowExpiresAt: null,
+      openRevision: null,
+      confirmedRevision: null,
+    });
+    expect(await storedStatus(g.id)).toBe('expired');
+  });
+});
+
+describe('the inbox', () => {
+  it('lists the open revisions awaiting my confirmation, soonest to expire first', async () => {
+    const t = await table();
+    const later = await submitted(t, t.ana.caller, game(t));
+    expect((await patchLeague(t, 'settings', { confirmationWindowDays: 3 })).status).toBe(200);
+    clock.advance(60 * SECOND);
+    const sooner = await submitted(t, t.cy.caller, game(t));
+
+    expect(await inbox(t, t.bo.caller)).toEqual([sooner, later]);
+  });
+
+  it('leaves out a revision I submitted, which counts as my confirmation', async () => {
+    const t = await table();
+    await submitted(t, t.ana.caller, game(t));
+    const cys = await submitted(t, t.cy.caller, game(t));
+
+    expect(await inbox(t, t.ana.caller)).toEqual([cys]);
+  });
+
+  it('drops a revision once I confirm it, and shows my confirmation to the others', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    await confirmed(t, t.bo.caller, g);
+
+    expect(await inbox(t, t.bo.caller)).toEqual([]);
+    const [forCy] = await inbox(t, t.cy.caller);
+    expect(confirmationsOf(forCy!)).toEqual(['player', 'player', null, null]);
+  });
+
+  it('leaves out games I did not play in', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    await submitted(t, t.ana.caller, game(t));
+
+    expect(await inbox(t, ed.caller)).toEqual([]);
+  });
+
+  it('leaves out a game once all four players have confirmed it', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    await confirmed(t, t.di.caller, g);
+
+    for (const p of [t.ana, t.bo, t.cy, t.di]) expect(await inbox(t, p.caller)).toEqual([]);
+  });
+
+  it('lists a revision awaiting commissioner review, which still needs my confirmation', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+
+    expect(await inbox(t, t.bo.caller)).toEqual([g]);
+  });
+
+  it('drops a revision when its window closes, with nothing written to the game', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY - SECOND);
+    expect(await inbox(t, t.bo.caller)).toEqual([g]);
+
+    clock.advance(SECOND);
+
+    expect(await inbox(t, t.bo.caller)).toEqual([]);
+    expect(await storedStatus(g.id)).toBe('pending');
+  });
+
+  it(`lists at most ${INBOX_MAX} games, the ones whose windows close soonest`, async () => {
+    const t = await table();
+    const recorded: Game[] = [];
+    for (let i = 0; i <= INBOX_MAX; i++) {
+      recorded.push(await submitted(t, t.ana.caller, game(t)));
+      clock.advance(SECOND);
+    }
+
+    const listed = await inbox(t, t.bo.caller);
+
+    expect(listed.map((g) => g.id)).toEqual(recorded.slice(0, INBOX_MAX).map((g) => g.id));
+  });
+
+  it("lists only this league's games for a player in two leagues", async () => {
+    const x = await table();
+    const { self: yan, ...l } = await league('Garage League', 'yan@example.com', 'Yan');
+    const y: Table = {
+      ...l,
+      ana: yan,
+      bo: await member(l, 'bo@example.com', 'Bo'),
+      cy: await member(l, 'pat@example.com', 'Pat'),
+      di: await member(l, 'quinn@example.com', 'Quinn'),
+    };
+    const inX = await submitted(x, x.ana.caller, game(x));
+    const inY = await submitted(y, y.ana.caller, game(y));
+
+    expect(await inbox(x, x.bo.caller)).toEqual([inX]);
+    expect(await inbox(y, y.bo.caller)).toEqual([inY]);
   });
 });

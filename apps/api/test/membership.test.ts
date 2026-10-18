@@ -1,7 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   CreateInviteResponse,
   ErrorBody,
+  GameResponse,
   InvitesResponse,
   JoinResponse,
   LeagueResponse,
@@ -625,7 +626,7 @@ describe('roles', () => {
 
 // Every league route, with the ids it needs. The first test checks this table against the
 // app's registered routes, so a new league route can't skip the tenancy checks below.
-type Ids = { leagueId: string; mid: string; iid: string };
+type Ids = { leagueId: string; mid: string; iid: string; gid: string; rid: string };
 type Route = { method: string; path: string; commissioner: boolean; body?: unknown };
 
 const LEAGUE_ROUTES: Route[] = [
@@ -690,22 +691,61 @@ const LEAGUE_ROUTES: Route[] = [
       winner: 'A',
     },
   },
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/games/:gid/revisions/:rid/confirm',
+    commissioner: false,
+    body: {},
+  },
+  { method: 'GET', path: '/api/leagues/:leagueId/inbox', commissioner: false },
 ];
 
 function fill(path: string, ids: Ids): string {
-  return path.replace(/:(leagueId|mid|iid)/g, (_m, key: keyof Ids) => ids[key]);
+  return path.replace(/:(leagueId|mid|iid|gid|rid)/g, (_m, key: keyof Ids) => ids[key]);
 }
 
 function callRoute(route: Route, ids: Ids, as: Caller): Promise<Response> {
   return call(route.method, fill(route.path, ids), { as, body: route.body });
 }
 
-// League Y with a pending member and an active invite, so every route has a real target.
-async function leagueWithTargets(): Promise<{ y: League; ids: Ids }> {
+const line = (membershipId: string, points: number) => ({ membershipId, points, sinks: 0 });
+
+// An open exhibition game in `l` between its commissioner and three new members, submitted
+// by the commissioner.
+async function openGame(l: League): Promise<{ gid: string; rid: string }> {
+  const gus = await member(l, 'gus@example.com', 'Gus');
+  const hal = await member(l, 'hal@example.com', 'Hal');
+  const ivy = await member(l, 'ivy@example.com', 'Ivy');
+  const res = await call('POST', `/api/leagues/${l.leagueId}/games`, {
+    as: l.commissioner,
+    body: {
+      idempotencyKey: randomUUID(),
+      kind: 'exhibition',
+      playedAt: '2026-10-18T11:30:00.000Z',
+      sides: {
+        A: { players: [line(l.commissionerMembershipId, 6), line(gus.membershipId, 5)] },
+        B: { players: [line(hal.membershipId, 5), line(ivy.membershipId, 4)] },
+      },
+      winner: 'A',
+    },
+  });
+  expect(res.status).toBe(201);
+  const { game } = GameResponse.parse(await res.json());
+  return { gid: game.id, rid: game.openRevision!.id };
+}
+
+const NEEDS_GAME = /:(gid|rid)\b/;
+
+// League Y with a pending member, an active invite, and, for a route that needs one, an open
+// game, so every route has a real target. A route without a game id gets unused placeholders.
+async function leagueWithTargets(route: Route): Promise<{ y: League; ids: Ids }> {
   const y = await league('Garage League', 'yan@example.com', 'Yan');
   const { id: iid, token } = await invite(y);
   const mid = await joined(token, await signIn(api.db, clock, 'pat@example.com'), 'Pat');
-  return { y, ids: { leagueId: y.leagueId, mid, iid } };
+  const game = NEEDS_GAME.test(route.path)
+    ? await openGame(y)
+    : { gid: randomUUID(), rid: randomUUID() };
+  return { y, ids: { leagueId: y.leagueId, mid, iid, ...game } };
 }
 
 describe('tenancy', () => {
@@ -728,7 +768,7 @@ describe('tenancy', () => {
     "gives a commissioner of league X 404 on league Y's resource: %s",
     async (_label, route) => {
       const x = await league('Basement League', 'ana@example.com', 'Ana');
-      const { y, ids } = await leagueWithTargets();
+      const { y, ids } = await leagueWithTargets(route);
 
       const res = await callRoute(route, ids, x.commissioner);
       // Control: the same request by Y's own commissioner finds the resource.
@@ -740,14 +780,14 @@ describe('tenancy', () => {
   );
 
   it.each(
-    LEAGUE_ROUTES.filter((r) => /:(mid|iid)\b/.test(r.path)).map(
+    LEAGUE_ROUTES.filter((r) => /:(mid|iid|gid|rid)\b/.test(r.path)).map(
       (r) => [`${r.method} ${r.path}`, r] as const,
     ),
   )(
-    "gives X's commissioner 404 for Y's member or invite named under X's own path: %s",
+    "gives X's commissioner 404 for Y's member, invite, or game named under X's own path: %s",
     async (_label, route) => {
       const x = await league('Basement League', 'ana@example.com', 'Ana');
-      const { ids } = await leagueWithTargets();
+      const { ids } = await leagueWithTargets(route);
 
       const res = await callRoute(route, { ...ids, leagueId: x.leagueId }, x.commissioner);
 
@@ -758,7 +798,7 @@ describe('tenancy', () => {
   it.each(LEAGUE_ROUTES.map((r) => [`${r.method} ${r.path}`, r] as const))(
     'gives a signed-in user with no membership 404: %s',
     async (_label, route) => {
-      const { ids } = await leagueWithTargets();
+      const { ids } = await leagueWithTargets(route);
       const stranger = await signIn(api.db, clock, 'stranger@example.com');
 
       const res = await callRoute(route, ids, stranger);
@@ -770,7 +810,7 @@ describe('tenancy', () => {
   it.each(
     LEAGUE_ROUTES.filter((r) => r.commissioner).map((r) => [`${r.method} ${r.path}`, r] as const),
   )('gives a non-commissioner member 403 on a commissioner route: %s', async (_label, route) => {
-    const { y, ids } = await leagueWithTargets();
+    const { y, ids } = await leagueWithTargets(route);
     const bo = await member(y, 'bo@example.com', 'Bo');
 
     const res = await callRoute(route, ids, bo.caller);

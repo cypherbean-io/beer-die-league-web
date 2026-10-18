@@ -2,11 +2,13 @@ import {
   checkRules,
   checkStructure,
   Game,
+  type GamePlayer,
   type GameRevision,
+  INBOX_MAX,
   playerLines,
   type SubmitGameBody,
 } from '@beer-die/core';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
@@ -27,8 +29,12 @@ type Deps = { db: Db; clock: Clock };
 
 type Path = Array<string | number>;
 
+type GameRow = typeof games.$inferSelect;
+
 const invalid = (message: string, details: unknown) =>
   new ApiError(422, 'VALIDATION', message, details);
+
+const notFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
 
 // A canonical form of everything but the idempotency key: fixed field order, lowercase ids,
 // and a normalized time, so a retried draft hashes the same however its JSON was laid out.
@@ -231,11 +237,201 @@ export async function submitGame(
   });
 }
 
-async function loadRevision(tx: Tx, revisionId: string): Promise<GameRevision> {
-  const [revision] = await tx.select().from(gameRevisions).where(eq(gameRevisions.id, revisionId));
-  if (!revision) throw new Error('referenced revision is missing');
+// The start of every write to an existing game: its row, locked FOR UPDATE until the
+// transaction ends so that transitions on one game happen one at a time, with a lapsed
+// window settled before anything else. A game outside the caller's league is a 404, like an
+// unknown one. Writes run at READ COMMITTED, so a write that waited on the lock then sees
+// what the previous holder committed.
+async function lockGame(tx: Tx, actor: Actor, gameId: string, now: Date): Promise<GameRow> {
+  const [game] = await tx
+    .select()
+    .from(games)
+    .where(and(eq(games.id, gameId), eq(games.leagueId, actor.leagueId)))
+    .for('update');
+  if (!game) throw notFound();
+  return settleExpired(tx, game, now);
+}
+
+// Materializes a lapsed window: the open revision expires, and so does a game that never
+// counted; one that did keeps its confirmed revision. Reads don't wait for this, because
+// they treat `now ≥ window_expires_at` as expired. Runs under the game row lock.
+async function settleExpired(tx: Tx, game: GameRow, now: Date): Promise<GameRow> {
+  const { openRevisionId, windowExpiresAt } = game;
+  if (!openRevisionId || !windowExpiresAt || now.getTime() < windowExpiresAt.getTime()) {
+    return game;
+  }
+  await tx
+    .update(gameRevisions)
+    .set({ status: 'expired' })
+    .where(and(eq(gameRevisions.id, openRevisionId), eq(gameRevisions.status, 'open')));
+  const [settled] = await tx
+    .update(games)
+    .set({
+      status: game.confirmedRevisionId === null ? 'expired' : game.status,
+      openRevisionId: null,
+      windowExpiresAt: null,
+    })
+    .where(eq(games.id, game.id))
+    .returning();
+  if (!settled) throw new Error('locked game is missing');
+  return settled;
+}
+
+// THE confirmation transition (SPEC §3.4), and the only code that confirms a revision. The
+// game's open revision confirms once each of its four players has a confirmation and, if it
+// breaks the rules, a commissioner has approved an override; it then becomes the revision
+// stats read. Call it under the game row lock after any change that could complete the
+// open revision. Until then it changes nothing.
+async function settleRevision(tx: Tx, game: GameRow): Promise<void> {
+  const revisionId = game.openRevisionId;
+  if (!revisionId) return;
+  const [revision] = await tx
+    .select({
+      status: gameRevisions.status,
+      ruleViolations: gameRevisions.ruleViolations,
+      overrideStatus: gameRevisions.overrideStatus,
+    })
+    .from(gameRevisions)
+    .where(eq(gameRevisions.id, revisionId));
+  if (!revision || revision.status !== 'open') return;
+  if (revision.ruleViolations.length > 0 && revision.overrideStatus !== 'approved') return;
+
+  const players = await tx
+    .select({ confirmation: confirmations.id })
+    .from(revisionPlayers)
+    .leftJoin(
+      confirmations,
+      and(
+        eq(confirmations.revisionId, revisionPlayers.revisionId),
+        eq(confirmations.membershipId, revisionPlayers.membershipId),
+      ),
+    )
+    .where(eq(revisionPlayers.revisionId, revisionId));
+  if (players.length !== 4 || players.some((p) => p.confirmation === null)) return;
+
+  await tx
+    .update(gameRevisions)
+    .set({ status: 'confirmed' })
+    .where(eq(gameRevisions.id, revisionId));
+  await tx
+    .update(games)
+    .set({
+      status: 'confirmed',
+      confirmedRevisionId: revisionId,
+      openRevisionId: null,
+      windowExpiresAt: null,
+    })
+    .where(eq(games.id, game.id));
+}
+
+// A player confirms the revision they were shown. If they have already confirmed it (or
+// submitted it), the game comes back unchanged, whatever has happened to it since.
+// Otherwise the revision must still be the game's open one.
+export async function confirmRevision(
+  deps: Deps,
+  actor: Actor,
+  gameId: string,
+  revisionId: string,
+): Promise<Game> {
+  const now = deps.clock.now();
+  // Path ids are matched case-insensitively; Postgres returns them in lower case.
+  const rid = revisionId.toLowerCase();
+
+  return deps.db.transaction(async (tx) => {
+    const game = await lockGame(tx, actor, gameId, now);
+    const [revision] = await tx
+      .select({ status: gameRevisions.status })
+      .from(gameRevisions)
+      .where(and(eq(gameRevisions.id, rid), eq(gameRevisions.gameId, game.id)));
+    if (!revision) throw notFound();
+
+    const [seat] = await tx
+      .select({ confirmation: confirmations.id })
+      .from(revisionPlayers)
+      .leftJoin(
+        confirmations,
+        and(
+          eq(confirmations.revisionId, revisionPlayers.revisionId),
+          eq(confirmations.membershipId, revisionPlayers.membershipId),
+        ),
+      )
+      .where(and(eq(revisionPlayers.revisionId, rid), eq(revisionPlayers.membershipId, actor.id)));
+    if (!seat) throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can confirm it');
+    if (seat.confirmation !== null) return loadGame(tx, game.id);
+
+    if (revision.status === 'expired') {
+      throw new ApiError(409, 'WINDOW_CLOSED', 'The window to confirm this game has closed');
+    }
+    if (revision.status !== 'open' || game.openRevisionId !== rid) {
+      throw new ApiError(
+        409,
+        'STALE_REVISION',
+        'This version of the game can no longer be confirmed',
+      );
+    }
+
+    await tx.insert(confirmations).values({
+      revisionId: rid,
+      membershipId: actor.id,
+      kind: 'player',
+      createdAt: now,
+    });
+    await settleRevision(tx, game);
+    return loadGame(tx, game.id);
+  });
+}
+
+// Games whose open revision awaits the caller's confirmation, soonest to expire first, up to
+// INBOX_MAX. A lapsed window counts as expired here even before any write has settled it.
+export async function listInbox(deps: Deps, actor: Actor): Promise<Game[]> {
+  const now = deps.clock.now();
+
+  // One snapshot, so each game is loaded in the state that put it in the inbox.
+  return deps.db.transaction(
+    async (tx) => {
+      const awaiting = await tx
+        .select({ id: games.id })
+        .from(games)
+        .innerJoin(gameRevisions, eq(gameRevisions.id, games.openRevisionId))
+        .innerJoin(
+          revisionPlayers,
+          and(
+            eq(revisionPlayers.revisionId, gameRevisions.id),
+            eq(revisionPlayers.membershipId, actor.id),
+          ),
+        )
+        .leftJoin(
+          confirmations,
+          and(
+            eq(confirmations.revisionId, gameRevisions.id),
+            eq(confirmations.membershipId, actor.id),
+          ),
+        )
+        .where(
+          and(
+            eq(games.leagueId, actor.leagueId),
+            eq(gameRevisions.status, 'open'),
+            gt(games.windowExpiresAt, now),
+            isNull(confirmations.id),
+          ),
+        )
+        .orderBy(asc(games.windowExpiresAt), asc(games.id))
+        .limit(INBOX_MAX);
+      return loadGames(
+        tx,
+        awaiting.map((g) => g.id),
+      );
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
+}
+
+async function loadRevisions(tx: Tx, ids: string[]): Promise<Map<string, GameRevision>> {
+  if (ids.length === 0) return new Map();
+  const revisions = await tx.select().from(gameRevisions).where(inArray(gameRevisions.id, ids));
   const players = await tx
     .select({
+      revisionId: revisionPlayers.revisionId,
       membershipId: revisionPlayers.membershipId,
       displayName: memberships.displayName,
       side: revisionPlayers.side,
@@ -253,33 +449,66 @@ async function loadRevision(tx: Tx, revisionId: string): Promise<GameRevision> {
         eq(confirmations.membershipId, revisionPlayers.membershipId),
       ),
     )
-    .where(eq(revisionPlayers.revisionId, revisionId))
+    .where(inArray(revisionPlayers.revisionId, ids))
     // The players were inserted in request order, and UUIDv7 ids are time-ordered.
     .orderBy(asc(revisionPlayers.side), asc(revisionPlayers.id));
-  return {
-    id: revision.id,
-    number: revision.number,
-    status: revision.status,
-    createdBy: revision.createdBy,
-    playedAt: revision.playedAt.toISOString(),
-    winner: revision.winner,
-    players,
-    ruleViolations: revision.ruleViolations,
-    overrideStatus: revision.overrideStatus,
+
+  const playersOf = new Map<string, GamePlayer[]>();
+  for (const { revisionId, ...player } of players) {
+    playersOf.set(revisionId, [...(playersOf.get(revisionId) ?? []), player]);
+  }
+  return new Map(
+    revisions.map((revision) => [
+      revision.id,
+      {
+        id: revision.id,
+        number: revision.number,
+        status: revision.status,
+        createdBy: revision.createdBy,
+        playedAt: revision.playedAt.toISOString(),
+        winner: revision.winner,
+        players: playersOf.get(revision.id) ?? [],
+        ruleViolations: revision.ruleViolations,
+        overrideStatus: revision.overrideStatus,
+      },
+    ]),
+  );
+}
+
+// Loads games in the order of `ids`, with their revisions in a fixed number of queries.
+async function loadGames(tx: Tx, ids: string[]): Promise<Game[]> {
+  if (ids.length === 0) return [];
+  const rows = await tx.select().from(games).where(inArray(games.id, ids));
+  const revisions = await loadRevisions(
+    tx,
+    rows.flatMap((g) => [g.openRevisionId, g.confirmedRevisionId].filter((id) => id !== null)),
+  );
+  const revision = (id: string | null) => {
+    if (id === null) return null;
+    const loaded = revisions.get(id);
+    if (!loaded) throw new Error('referenced revision is missing');
+    return loaded;
   };
+  const byId = new Map(rows.map((g) => [g.id, g]));
+
+  return ids.map((id) => {
+    const game = byId.get(id);
+    if (!game) throw new Error('game is missing');
+    // Parsed rather than cast: a jsonb column whose stored shape has drifted fails here,
+    // loudly, instead of reaching clients.
+    return Game.parse({
+      id: game.id,
+      kind: game.kind,
+      status: game.status,
+      rulesSnapshot: game.rulesSnapshot,
+      windowExpiresAt: game.windowExpiresAt?.toISOString() ?? null,
+      openRevision: revision(game.openRevisionId),
+      confirmedRevision: revision(game.confirmedRevisionId),
+    });
+  });
 }
 
 async function loadGame(tx: Tx, gameId: string): Promise<Game> {
-  const [game] = await tx.select().from(games).where(eq(games.id, gameId));
-  if (!game) throw new Error('game is missing');
-  // Parsed rather than cast: a jsonb column whose stored shape has drifted fails here,
-  // loudly, instead of reaching clients.
-  return Game.parse({
-    id: game.id,
-    kind: game.kind,
-    status: game.status,
-    rulesSnapshot: game.rulesSnapshot,
-    windowExpiresAt: game.windowExpiresAt?.toISOString() ?? null,
-    openRevision: game.openRevisionId ? await loadRevision(tx, game.openRevisionId) : null,
-  });
+  const [game] = await loadGames(tx, [gameId]);
+  return game!;
 }
