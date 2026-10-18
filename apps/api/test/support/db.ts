@@ -60,7 +60,7 @@ export async function resetTables(db: Db): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(sql`set local session_replication_role = replica`);
     await tx.execute(
-      sql`truncate table audit_events, invites, memberships, leagues, email_outbox, sessions, auth_codes, rate_limits, users cascade`,
+      sql`truncate table confirmations, revision_players, game_revisions, games, audit_events, invites, memberships, leagues, email_outbox, sessions, auth_codes, rate_limits, users cascade`,
     );
   });
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PlayerLine, RuleViolation } from './rules.ts';
 
 export const ErrorBody = z.strictObject({
   error: z.strictObject({
@@ -247,3 +248,118 @@ export type CreateInviteResponse = z.infer<typeof CreateInviteResponse>;
 
 export const InvitesResponse = z.strictObject({ invites: z.array(Invite) });
 export type InvitesResponse = z.infer<typeof InvitesResponse>;
+
+export const GameSide = z.enum(['A', 'B']);
+
+export const GameKind = z.enum(['season', 'exhibition']);
+export type GameKind = z.infer<typeof GameKind>;
+
+// A game's points (sink points included) or sinks for one player.
+const LineValue = z.int().min(0).max(99);
+
+// What a client sends for one player. `is_sub` and team totals are derived by the server,
+// so they aren't accepted.
+const PlayerLineBody = z.strictObject({
+  membershipId: z.uuid(),
+  points: LineValue,
+  sinks: LineValue,
+});
+
+const SideBody = z.strictObject({ players: z.array(PlayerLineBody).length(2) });
+
+const PLAYED_AT_FLOOR = Date.parse('2000-01-01T00:00:00.000Z');
+
+// The first submission of a game. The rest of checkStructure, the membership checks, and
+// checkRules run on the server after this parses. `idempotencyKey` is generated once per
+// draft, so a retried submission returns the original game.
+export const SubmitGameBody = z.strictObject({
+  idempotencyKey: z.uuid(),
+  // Season games arrive with seasons (SPEC §3.10, slice 5).
+  kind: z.literal('exhibition'),
+  // The server refuses a time in the future. The floor keeps out years the database stores
+  // but reads back wrong: a timestamp before year 100 comes back through `new Date()`, which
+  // misparses it (0049 becomes 2049).
+  playedAt: z.iso
+    .datetime()
+    .refine((s) => Date.parse(s) >= PLAYED_AT_FLOOR, 'Choose a time in or after 2000'),
+  sides: z.strictObject({ A: SideBody, B: SideBody }),
+  winner: GameSide,
+  // Store a game that breaks the rules for a commissioner to review, instead of refusing it.
+  requestOverride: z.boolean().optional(),
+});
+export type SubmitGameBody = z.input<typeof SubmitGameBody>;
+
+type SideLines = { players: Array<Omit<PlayerLine, 'side'>> };
+
+// A submission's sides as the flat player list checkStructure and checkRules take: side A's
+// players, then side B's.
+export function playerLines(sides: { A: SideLines; B: SideLines }): PlayerLine[] {
+  return (['A', 'B'] as const).flatMap((side) => sides[side].players.map((p) => ({ ...p, side })));
+}
+
+export const GameStatus = z.enum(['pending', 'confirmed', 'expired', 'voided']);
+export const RevisionStatus = z.enum([
+  'open',
+  'confirmed',
+  'superseded',
+  'expired',
+  'voided',
+  'rejected',
+]);
+export const OverrideStatus = z.enum(['requested', 'approved', 'rejected']);
+export const ConfirmationKind = z.enum(['player', 'forced']);
+
+export const GameRuleViolation = z.strictObject({
+  code: z.enum([
+    'BELOW_TARGET',
+    'MARGIN_TOO_SMALL',
+    'ALREADY_OVER',
+    'LOSER_SINK_WHEN_SINK_ENDS',
+    'MULTIPLE_SINKS_WHEN_SINK_ENDS',
+    'SINK_AFTER_GAME_OVER',
+  ]),
+  message: z.string(),
+}) satisfies z.ZodType<RuleViolation>;
+
+export const GamePlayer = z.strictObject({
+  membershipId: z.uuid(),
+  displayName: z.string(),
+  side: GameSide,
+  points: z.int(),
+  sinks: z.int(),
+  isSub: z.boolean(),
+  // How the player confirmed this revision, or null while their confirmation is pending.
+  confirmation: ConfirmationKind.nullable(),
+});
+export type GamePlayer = z.infer<typeof GamePlayer>;
+
+// Revisions are immutable; a correction creates a new one.
+export const GameRevision = z.strictObject({
+  id: z.uuid(),
+  number: z.int(),
+  status: RevisionStatus,
+  createdBy: z.uuid(),
+  playedAt: z.iso.datetime(),
+  winner: GameSide,
+  // Side A's players, then side B's.
+  players: z.array(GamePlayer),
+  // Empty when the revision conforms to the game's rules snapshot.
+  ruleViolations: z.array(GameRuleViolation),
+  overrideStatus: OverrideStatus.nullable(),
+});
+export type GameRevision = z.infer<typeof GameRevision>;
+
+export const Game = z.strictObject({
+  id: z.uuid(),
+  kind: GameKind,
+  status: GameStatus,
+  // The rules at first submission. Every revision of the game is checked against these.
+  rulesSnapshot: LeagueRules,
+  // Set at first submission and not moved by corrections. Null when nothing is open.
+  windowExpiresAt: z.iso.datetime().nullable(),
+  openRevision: GameRevision.nullable(),
+});
+export type Game = z.infer<typeof Game>;
+
+export const GameResponse = z.strictObject({ game: Game });
+export type GameResponse = z.infer<typeof GameResponse>;

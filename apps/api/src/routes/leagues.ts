@@ -5,6 +5,7 @@ import { type LeagueEnv, requireMembership, requireSession } from '../auth/middl
 import { getLeague, updateRules, updateSettings } from '../domain/leagues.ts';
 import { readJson } from '../http.ts';
 import { auditRoutes } from './audit.ts';
+import { gameRoutes } from './games.ts';
 import { leagueInviteRoutes } from './invites.ts';
 import { memberRoutes } from './members.ts';
 
@@ -29,5 +30,6 @@ export function leagueRoutes(deps: AppDeps) {
     })
     .route('/', memberRoutes(deps))
     .route('/', leagueInviteRoutes(deps))
-    .route('/', auditRoutes(deps));
+    .route('/', auditRoutes(deps))
+    .route('/', gameRoutes(deps));
 }

@@ -1,8 +1,11 @@
+import type { Rules, RuleViolation } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   boolean,
   check,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -210,4 +213,118 @@ export const invites = pgTable(
     revokedAt: ts('revoked_at'),
   },
   (t) => [index('invites_league_id_idx').on(t.leagueId)],
+);
+
+// A recorded game. Its rules snapshot is the league rules at first submission, and every
+// revision is checked against it, so editing the league rules never re-validates a game.
+// Retrying a submission with the same idempotency key returns this game, provided the
+// payload hash matches. Season columns (season_id, team ids) arrive with seasons.
+export const games = pgTable(
+  'games',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    kind: text('kind', { enum: ['season', 'exhibition'] }).notNull(),
+    status: text('status', { enum: ['pending', 'confirmed', 'expired', 'voided'] }).notNull(),
+    openRevisionId: uuid('open_revision_id').references((): AnyPgColumn => gameRevisions.id),
+    // Set at first submission (or when a confirmed game is reopened); corrections keep it.
+    windowExpiresAt: ts('window_expires_at'),
+    rulesSnapshot: jsonb('rules_snapshot').$type<Rules>().notNull(),
+    submittedBy: uuid('submitted_by')
+      .notNull()
+      .references(() => memberships.id),
+    idempotencyKey: uuid('idempotency_key').notNull(),
+    payloadSha256: text('payload_sha256').notNull(),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    unique('games_idempotency_unique').on(t.leagueId, t.submittedBy, t.idempotencyKey),
+    check('games_kind_valid', sql`${t.kind} in ('season', 'exhibition')`),
+    check('games_status_valid', sql`${t.status} in ('pending', 'confirmed', 'expired', 'voided')`),
+  ],
+);
+
+// Immutable: a correction creates a new revision rather than editing one.
+export const gameRevisions = pgTable(
+  'game_revisions',
+  {
+    id: id(),
+    gameId: uuid('game_id')
+      .notNull()
+      .references((): AnyPgColumn => games.id),
+    number: integer('number').notNull(),
+    status: text('status', {
+      enum: ['open', 'confirmed', 'superseded', 'expired', 'voided', 'rejected'],
+    }).notNull(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => memberships.id),
+    playedAt: ts('played_at').notNull(),
+    winner: text('winner', { enum: ['A', 'B'] }).notNull(),
+    // checkRules against the game's rules snapshot; empty means the revision conforms.
+    ruleViolations: jsonb('rule_violations').$type<RuleViolation[]>().notNull(),
+    overrideStatus: text('override_status', { enum: ['requested', 'approved', 'rejected'] }),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    unique('game_revisions_game_number_unique').on(t.gameId, t.number),
+    check('game_revisions_number_min', sql`${t.number} >= 1`),
+    check(
+      'game_revisions_status_valid',
+      sql`${t.status} in ('open', 'confirmed', 'superseded', 'expired', 'voided', 'rejected')`,
+    ),
+    check('game_revisions_winner_valid', sql`${t.winner} in ('A', 'B')`),
+    check(
+      'game_revisions_override_status_valid',
+      sql`${t.overrideStatus} in ('requested', 'approved', 'rejected')`,
+    ),
+  ],
+);
+
+// Exactly four rows per revision, two per side. `is_sub` is derived by the server.
+export const revisionPlayers = pgTable(
+  'revision_players',
+  {
+    id: id(),
+    revisionId: uuid('revision_id')
+      .notNull()
+      .references(() => gameRevisions.id),
+    side: text('side', { enum: ['A', 'B'] }).notNull(),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id),
+    isSub: boolean('is_sub').notNull(),
+    points: integer('points').notNull(),
+    sinks: integer('sinks').notNull(),
+  },
+  (t) => [
+    unique('revision_players_revision_membership_unique').on(t.revisionId, t.membershipId),
+    check('revision_players_side_valid', sql`${t.side} in ('A', 'B')`),
+    check('revision_players_points_range', sql`${t.points} between 0 and 99`),
+    check('revision_players_sinks_range', sql`${t.sinks} between 0 and 99`),
+  ],
+);
+
+// A player's confirmation of one revision; a new revision starts with none of the old ones.
+// The foreign key to revision_players means only that revision's players can confirm it.
+export const confirmations = pgTable(
+  'confirmations',
+  {
+    id: id(),
+    revisionId: uuid('revision_id').notNull(),
+    membershipId: uuid('membership_id').notNull(),
+    kind: text('kind', { enum: ['player', 'forced'] }).notNull(),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    unique('confirmations_revision_membership_unique').on(t.revisionId, t.membershipId),
+    foreignKey({
+      name: 'confirmations_revision_player_fk',
+      columns: [t.revisionId, t.membershipId],
+      foreignColumns: [revisionPlayers.revisionId, revisionPlayers.membershipId],
+    }),
+    check('confirmations_kind_valid', sql`${t.kind} in ('player', 'forced')`),
+  ],
 );

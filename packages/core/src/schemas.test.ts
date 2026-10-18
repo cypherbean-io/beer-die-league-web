@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { AuditQuery, DisplayName, nameKey, RulesBody, SettingsBody } from './schemas.ts';
+import {
+  AuditQuery,
+  DisplayName,
+  nameKey,
+  playerLines,
+  RulesBody,
+  SettingsBody,
+  SubmitGameBody,
+} from './schemas.ts';
 
 const accepts = (raw: string) => DisplayName.safeParse(raw).success;
 
@@ -169,5 +177,106 @@ describe('AuditQuery', () => {
     ['an unknown parameter', { action: 'league.rules_updated' }],
   ])('rejects %s', (_label, query) => {
     expect(AuditQuery.safeParse(query).success).toBe(false);
+  });
+});
+
+describe('SubmitGameBody', () => {
+  const ids = [
+    '0199f3a2-5c1e-7a00-8000-00000000000a',
+    '0199f3a2-5c1e-7a00-8000-00000000000b',
+    '0199f3a2-5c1e-7a00-8000-00000000000c',
+    '0199f3a2-5c1e-7a00-8000-00000000000d',
+  ] as const;
+  const line = (membershipId: string, points: number, sinks = 0) => ({
+    membershipId,
+    points,
+    sinks,
+  });
+  const valid = {
+    idempotencyKey: '0199f3a2-5c1e-7a00-8000-0000000000ff',
+    kind: 'exhibition',
+    playedAt: '2026-10-18T11:30:00.000Z',
+    sides: {
+      A: { players: [line(ids[0], 6), line(ids[1], 5)] },
+      B: { players: [line(ids[2], 5), line(ids[3], 4)] },
+    },
+    winner: 'A',
+  };
+  const withLine = (patch: object) => ({
+    ...valid,
+    sides: { ...valid.sides, A: { players: [{ ...line(ids[0], 6), ...patch }, line(ids[1], 5)] } },
+  });
+
+  it('accepts an exhibition game', () => {
+    expect(SubmitGameBody.safeParse(valid).success).toBe(true);
+  });
+
+  it('accepts a time at the very start of 2000', () => {
+    const body = { ...valid, playedAt: '2000-01-01T00:00:00.000Z' };
+
+    expect(SubmitGameBody.safeParse(body).success).toBe(true);
+  });
+
+  it('accepts a request for commissioner review', () => {
+    expect(SubmitGameBody.safeParse({ ...valid, requestOverride: true }).success).toBe(true);
+  });
+
+  it.each([
+    ['0 points and 0 sinks', { points: 0, sinks: 0 }],
+    ['99 points and 99 sinks', { points: 99, sinks: 99 }],
+  ])('accepts a line of %s', (_label, patch) => {
+    expect(SubmitGameBody.safeParse(withLine(patch)).success).toBe(true);
+  });
+
+  it.each([
+    ['a season game, which needs seasons', { ...valid, kind: 'season' }],
+    ['a missing winner', { ...valid, winner: undefined }],
+    ['a winner other than A or B', { ...valid, winner: 'C' }],
+    ['a date without a time', { ...valid, playedAt: '2026-10-18' }],
+    ['a time before 2000', { ...valid, playedAt: '1999-12-31T23:59:59.999Z' }],
+    ['a two-digit year', { ...valid, playedAt: '0049-10-18T11:30:00.000Z' }],
+    ['an idempotency key that is not a UUID', { ...valid, idempotencyKey: 'draft-1' }],
+    [
+      'three players on one side',
+      {
+        ...valid,
+        sides: {
+          A: { players: [line(ids[0], 4), line(ids[1], 4), line(ids[2], 3)] },
+          B: { players: [line(ids[3], 9)] },
+        },
+      },
+    ],
+    ['a missing side', { ...valid, sides: { A: valid.sides.A } }],
+    ['a player id that is not a UUID', withLine({ membershipId: 'ana' })],
+    ['100 points', withLine({ points: 100 })],
+    ['negative sinks', withLine({ sinks: -1 })],
+    ['fractional points', withLine({ points: 5.5 })],
+    ['points sent as a string', withLine({ points: '6' })],
+    ['a client-derived sub flag', withLine({ isSub: false })],
+    [
+      'a client-derived team total',
+      { ...valid, sides: { ...valid.sides, B: { ...valid.sides.B, total: 9 } } },
+    ],
+    ['an unknown key', { ...valid, seasonId: ids[0] }],
+  ])('rejects %s', (_label, body) => {
+    expect(SubmitGameBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('playerLines', () => {
+  it("lists side A's players, then side B's, each tagged with its side", () => {
+    const a1 = { membershipId: 'a1', points: 6, sinks: 1 };
+    const a2 = { membershipId: 'a2', points: 5, sinks: 0 };
+    const b1 = { membershipId: 'b1', points: 5, sinks: 0 };
+    const b2 = { membershipId: 'b2', points: 4, sinks: 0 };
+
+    const lines = playerLines({ A: { players: [a1, a2] }, B: { players: [b1, b2] } });
+
+    expect(lines).toEqual([
+      { ...a1, side: 'A' },
+      { ...a2, side: 'A' },
+      { ...b1, side: 'B' },
+      { ...b2, side: 'B' },
+    ]);
   });
 });

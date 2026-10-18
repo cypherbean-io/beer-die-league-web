@@ -2,6 +2,8 @@ import {
   AuditResponse,
   CreateInviteResponse,
   ErrorBody,
+  type Game,
+  GameResponse,
   HealthResponse,
   type Invite,
   InvitesResponse,
@@ -15,6 +17,7 @@ import {
   type MyMembership,
   type RulesBody,
   type SettingsBody,
+  type SubmitGameBody,
   VerifyCodeResponse,
 } from '@beer-die/core';
 
@@ -128,6 +131,14 @@ export async function updateSettings(leagueId: string, patch: SettingsBody): Pro
 export async function getAudit(leagueId: string, before?: string): Promise<AuditResponse> {
   const query = before === undefined ? '' : `?before=${encodeURIComponent(before)}`;
   return getJson(`${leaguePath(leagueId)}/audit${query}`, AuditResponse);
+}
+
+// Retrying with the same body (and so the same idempotency key) returns the original game
+// rather than recording a second one.
+export async function submitGame(leagueId: string, body: SubmitGameBody): Promise<Game> {
+  const res = await postJson(`${leaguePath(leagueId)}/games`, body);
+  if (!res.ok) throw await failure(res);
+  return GameResponse.parse(await res.json()).game;
 }
 
 export async function getMembers(leagueId: string): Promise<Member[]> {
