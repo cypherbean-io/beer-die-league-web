@@ -374,3 +374,34 @@ export const INBOX_MAX = 50;
 // Games whose open revision awaits the caller's confirmation, soonest to expire first.
 export const InboxResponse = z.strictObject({ games: z.array(Game).max(INBOX_MAX) });
 export type InboxResponse = z.infer<typeof InboxResponse>;
+
+// Which counted games a stat covers (SPEC §3.7): `alltime` is every season game, and
+// `combined` is every game. Season scopes (`season:<id>`) arrive with seasons (slice 5).
+export const StatsScope = z.enum(['alltime', 'exhibition', 'combined']);
+export type StatsScope = z.infer<typeof StatsScope>;
+
+export const PlayerStatsQuery = z.strictObject({ scope: StatsScope });
+export type PlayerStatsQuery = z.input<typeof PlayerStatsQuery>;
+
+// One player's line in a scope, from confirmed games only. Points include sink points. The
+// per-game rates are null until the player has a counted game in the scope.
+export const PlayerStats = z.strictObject({
+  membershipId: z.uuid(),
+  displayName: z.string(),
+  gamesPlayed: z.int(),
+  wins: z.int(),
+  losses: z.int(),
+  winPct: z.number().nullable(),
+  points: z.int(),
+  pointsPerGame: z.number().nullable(),
+  sinks: z.int(),
+  sinksPerGame: z.number().nullable(),
+});
+export type PlayerStats = z.infer<typeof PlayerStats>;
+
+// Every player with a counted game in the scope, by wins, then points, then name.
+export const PlayerStatsResponse = z.strictObject({ players: z.array(PlayerStats) });
+export type PlayerStatsResponse = z.infer<typeof PlayerStatsResponse>;
+
+export const PlayerStatResponse = z.strictObject({ player: PlayerStats });
+export type PlayerStatResponse = z.infer<typeof PlayerStatResponse>;
