@@ -9,6 +9,7 @@ import { gameRoutes } from './games.ts';
 import { inboxRoutes } from './inbox.ts';
 import { leagueInviteRoutes } from './invites.ts';
 import { memberRoutes } from './members.ts';
+import { statsRoutes } from './stats.ts';
 
 // Mounted at /leagues/:leagueId. Every route below resolves the caller's approved membership
 // first; handlers read the league from it, never from the request.
@@ -33,5 +34,6 @@ export function leagueRoutes(deps: AppDeps) {
     .route('/', leagueInviteRoutes(deps))
     .route('/', auditRoutes(deps))
     .route('/', gameRoutes(deps))
-    .route('/', inboxRoutes(deps));
+    .route('/', inboxRoutes(deps))
+    .route('/', statsRoutes(deps));
 }

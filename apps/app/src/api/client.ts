@@ -16,8 +16,12 @@ import {
   type MembershipRole,
   MeResponse,
   type MyMembership,
+  type PlayerStats,
+  PlayerStatResponse,
+  PlayerStatsResponse,
   type RulesBody,
   type SettingsBody,
+  type StatsScope,
   type SubmitGameBody,
   VerifyCodeResponse,
 } from '@beer-die/core';
@@ -157,6 +161,21 @@ export async function confirmRevision(
   const res = await postJson(path, {});
   if (!res.ok) throw await failure(res);
   return GameResponse.parse(await res.json()).game;
+}
+
+// Everyone with a counted game in the scope, by wins, then points, then name.
+export async function getPlayerStats(leagueId: string, scope: StatsScope): Promise<PlayerStats[]> {
+  const path = `${leaguePath(leagueId)}/stats/players?scope=${encodeURIComponent(scope)}`;
+  return (await getJson(path, PlayerStatsResponse)).players;
+}
+
+export async function getPlayerProfile(
+  leagueId: string,
+  membershipId: string,
+  scope: StatsScope,
+): Promise<PlayerStats> {
+  const path = `${leaguePath(leagueId)}/stats/players/${encodeURIComponent(membershipId)}?scope=${encodeURIComponent(scope)}`;
+  return (await getJson(path, PlayerStatResponse)).player;
 }
 
 export async function getMembers(leagueId: string): Promise<Member[]> {

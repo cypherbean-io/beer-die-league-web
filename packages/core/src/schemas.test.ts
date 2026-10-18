@@ -4,6 +4,7 @@ import {
   DisplayName,
   nameKey,
   playerLines,
+  PlayerStatsQuery,
   RulesBody,
   SettingsBody,
   SubmitGameBody,
@@ -177,6 +178,24 @@ describe('AuditQuery', () => {
     ['an unknown parameter', { action: 'league.rules_updated' }],
   ])('rejects %s', (_label, query) => {
     expect(AuditQuery.safeParse(query).success).toBe(false);
+  });
+});
+
+describe('PlayerStatsQuery', () => {
+  it.each(['alltime', 'exhibition', 'combined'])('accepts the scope %j', (scope) => {
+    expect(PlayerStatsQuery.parse({ scope })).toEqual({ scope });
+  });
+
+  it.each([
+    ['no scope', {}],
+    ['an empty scope', { scope: '' }],
+    ['an unknown scope', { scope: 'lifetime' }],
+    ['a scope in another case', { scope: 'Combined' }],
+    // Season scopes arrive with seasons (SPEC §3.10, slice 5).
+    ['a season scope', { scope: 'season:0199f3a2-5c1e-7a00-8000-000000000000' }],
+    ['an unknown parameter', { scope: 'combined', sort: 'wins' }],
+  ])('rejects %s', (_label, query) => {
+    expect(PlayerStatsQuery.safeParse(query).success).toBe(false);
   });
 });
 

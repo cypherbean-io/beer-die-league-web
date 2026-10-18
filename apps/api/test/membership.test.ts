@@ -627,7 +627,13 @@ describe('roles', () => {
 // Every league route, with the ids it needs. The first test checks this table against the
 // app's registered routes, so a new league route can't skip the tenancy checks below.
 type Ids = { leagueId: string; mid: string; iid: string; gid: string; rid: string };
-type Route = { method: string; path: string; commissioner: boolean; body?: unknown };
+type Route = {
+  method: string;
+  path: string;
+  commissioner: boolean;
+  query?: string;
+  body?: unknown;
+};
 
 const LEAGUE_ROUTES: Route[] = [
   { method: 'GET', path: '/api/leagues/:leagueId', commissioner: false },
@@ -698,6 +704,18 @@ const LEAGUE_ROUTES: Route[] = [
     body: {},
   },
   { method: 'GET', path: '/api/leagues/:leagueId/inbox', commissioner: false },
+  {
+    method: 'GET',
+    path: '/api/leagues/:leagueId/stats/players',
+    commissioner: false,
+    query: '?scope=combined',
+  },
+  {
+    method: 'GET',
+    path: '/api/leagues/:leagueId/stats/players/:mid',
+    commissioner: false,
+    query: '?scope=combined',
+  },
 ];
 
 function fill(path: string, ids: Ids): string {
@@ -705,7 +723,7 @@ function fill(path: string, ids: Ids): string {
 }
 
 function callRoute(route: Route, ids: Ids, as: Caller): Promise<Response> {
-  return call(route.method, fill(route.path, ids), { as, body: route.body });
+  return call(route.method, fill(route.path, ids) + (route.query ?? ''), { as, body: route.body });
 }
 
 const line = (membershipId: string, points: number) => ({ membershipId, points, sinks: 0 });
@@ -735,6 +753,8 @@ async function openGame(l: League): Promise<{ gid: string; rid: string }> {
 }
 
 const NEEDS_GAME = /:(gid|rid)\b/;
+// A pending member has no stats profile, so these routes need Pat approved.
+const NEEDS_APPROVED_MEMBER = /\/stats\/players\/:mid\b/;
 
 // League Y with a pending member, an active invite, and, for a route that needs one, an open
 // game, so every route has a real target. A route without a game id gets unused placeholders.
@@ -742,6 +762,13 @@ async function leagueWithTargets(route: Route): Promise<{ y: League; ids: Ids }>
   const y = await league('Garage League', 'yan@example.com', 'Yan');
   const { id: iid, token } = await invite(y);
   const mid = await joined(token, await signIn(api.db, clock, 'pat@example.com'), 'Pat');
+  if (NEEDS_APPROVED_MEMBER.test(route.path)) {
+    const approved = await call('POST', `/api/leagues/${y.leagueId}/members/${mid}/approve`, {
+      as: y.commissioner,
+      body: {},
+    });
+    expect(approved.status).toBe(200);
+  }
   const game = NEEDS_GAME.test(route.path)
     ? await openGame(y)
     : { gid: randomUUID(), rid: randomUUID() };
