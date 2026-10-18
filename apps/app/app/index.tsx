@@ -1,8 +1,8 @@
-import type { MyMembership } from '@beer-die/core';
+import { INBOX_MAX, type MyMembership } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { getHealth, getLeague, logout } from '../src/api/client';
+import { getHealth, getInbox, getLeague, logout } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
 
 export default function Home() {
@@ -57,7 +57,14 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
     queryKey: ['league', membership.leagueId],
     queryFn: () => getLeague(membership.leagueId),
   });
+  const inbox = useQuery({
+    queryKey: ['inbox', membership.leagueId],
+    queryFn: () => getInbox(membership.leagueId),
+  });
   const rules = league.data?.rules;
+  const waiting = inbox.data?.length ?? 0;
+  // The inbox is capped, so a full one may hold more.
+  const badge = waiting >= INBOX_MAX ? `${INBOX_MAX}+` : String(waiting);
 
   return (
     <>
@@ -71,6 +78,15 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
           {rules.sinkEndsGame ? ' A sink ends the game.' : ''}
         </Text>
       )}
+      <Link href="/inbox" testID="inbox-link" style={styles.link}>
+        Inbox
+        {waiting > 0 && (
+          <Text testID="inbox-badge" style={styles.badge} aria-label={`${badge} to confirm`}>
+            {' '}
+            {badge}{' '}
+          </Text>
+        )}
+      </Link>
       <Link href="/record-game" testID="record-game-link" style={styles.link}>
         Record game
       </Link>
@@ -99,4 +115,5 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '700' },
   message: { textAlign: 'center', maxWidth: 420 },
   link: { color: '#1d4ed8', padding: 8 },
+  badge: { backgroundColor: '#b91c1c', color: '#fff', fontWeight: '700', borderRadius: 10 },
 });

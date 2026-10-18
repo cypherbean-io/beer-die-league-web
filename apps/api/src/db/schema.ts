@@ -229,6 +229,10 @@ export const games = pgTable(
     kind: text('kind', { enum: ['season', 'exhibition'] }).notNull(),
     status: text('status', { enum: ['pending', 'confirmed', 'expired', 'voided'] }).notNull(),
     openRevisionId: uuid('open_revision_id').references((): AnyPgColumn => gameRevisions.id),
+    // The revision stats read. Set only by settleRevision (domain/games.ts).
+    confirmedRevisionId: uuid('confirmed_revision_id').references(
+      (): AnyPgColumn => gameRevisions.id,
+    ),
     // Set at first submission (or when a confirmed game is reopened); corrections keep it.
     windowExpiresAt: ts('window_expires_at'),
     rulesSnapshot: jsonb('rules_snapshot').$type<Rules>().notNull(),
@@ -243,6 +247,11 @@ export const games = pgTable(
     unique('games_idempotency_unique').on(t.leagueId, t.submittedBy, t.idempotencyKey),
     check('games_kind_valid', sql`${t.kind} in ('season', 'exhibition')`),
     check('games_status_valid', sql`${t.status} in ('pending', 'confirmed', 'expired', 'voided')`),
+    // A game that has counted keeps counting through a reopen that expires or is voided.
+    check(
+      'games_confirmed_has_revision',
+      sql`(${t.status} = 'confirmed') = (${t.confirmedRevisionId} is not null)`,
+    ),
   ],
 );
 

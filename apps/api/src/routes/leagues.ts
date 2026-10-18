@@ -6,6 +6,7 @@ import { getLeague, updateRules, updateSettings } from '../domain/leagues.ts';
 import { readJson } from '../http.ts';
 import { auditRoutes } from './audit.ts';
 import { gameRoutes } from './games.ts';
+import { inboxRoutes } from './inbox.ts';
 import { leagueInviteRoutes } from './invites.ts';
 import { memberRoutes } from './members.ts';
 
@@ -31,5 +32,6 @@ export function leagueRoutes(deps: AppDeps) {
     .route('/', memberRoutes(deps))
     .route('/', leagueInviteRoutes(deps))
     .route('/', auditRoutes(deps))
-    .route('/', gameRoutes(deps));
+    .route('/', gameRoutes(deps))
+    .route('/', inboxRoutes(deps));
 }

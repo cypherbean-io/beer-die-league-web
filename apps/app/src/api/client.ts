@@ -5,6 +5,7 @@ import {
   type Game,
   GameResponse,
   HealthResponse,
+  InboxResponse,
   type Invite,
   InvitesResponse,
   JoinResponse,
@@ -137,6 +138,23 @@ export async function getAudit(leagueId: string, before?: string): Promise<Audit
 // rather than recording a second one.
 export async function submitGame(leagueId: string, body: SubmitGameBody): Promise<Game> {
   const res = await postJson(`${leaguePath(leagueId)}/games`, body);
+  if (!res.ok) throw await failure(res);
+  return GameResponse.parse(await res.json()).game;
+}
+
+// Games whose open revision awaits my confirmation, soonest to expire first.
+export async function getInbox(leagueId: string): Promise<Game[]> {
+  return (await getJson(`${leaguePath(leagueId)}/inbox`, InboxResponse)).games;
+}
+
+// Always the revision the player was shown, so nobody confirms numbers they haven't seen.
+export async function confirmRevision(
+  leagueId: string,
+  gameId: string,
+  revisionId: string,
+): Promise<Game> {
+  const path = `${leaguePath(leagueId)}/games/${encodeURIComponent(gameId)}/revisions/${encodeURIComponent(revisionId)}/confirm`;
+  const res = await postJson(path, {});
   if (!res.ok) throw await failure(res);
   return GameResponse.parse(await res.json()).game;
 }

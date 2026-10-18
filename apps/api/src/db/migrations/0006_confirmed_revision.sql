@@ -1,0 +1,3 @@
+ALTER TABLE "games" ADD COLUMN "confirmed_revision_id" uuid;--> statement-breakpoint
+ALTER TABLE "games" ADD CONSTRAINT "games_confirmed_revision_id_game_revisions_id_fk" FOREIGN KEY ("confirmed_revision_id") REFERENCES "public"."game_revisions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "games" ADD CONSTRAINT "games_confirmed_has_revision" CHECK (("games"."status" = 'confirmed') = ("games"."confirmed_revision_id" is not null));

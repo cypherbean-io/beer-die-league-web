@@ -357,9 +357,20 @@ export const Game = z.strictObject({
   rulesSnapshot: LeagueRules,
   // Set at first submission and not moved by corrections. Null when nothing is open.
   windowExpiresAt: z.iso.datetime().nullable(),
+  // The revision awaiting confirmation, if any.
   openRevision: GameRevision.nullable(),
+  // The revision that counts in stats, once all four players have confirmed one.
+  confirmedRevision: GameRevision.nullable(),
 });
 export type Game = z.infer<typeof Game>;
 
 export const GameResponse = z.strictObject({ game: Game });
 export type GameResponse = z.infer<typeof GameResponse>;
+
+// The inbox lists at most this many games. Normal play never comes close; the cap keeps a
+// flood of submissions from making a player's inbox unloadable.
+export const INBOX_MAX = 50;
+
+// Games whose open revision awaits the caller's confirmation, soonest to expire first.
+export const InboxResponse = z.strictObject({ games: z.array(Game).max(INBOX_MAX) });
+export type InboxResponse = z.infer<typeof InboxResponse>;
