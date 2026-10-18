@@ -129,6 +129,84 @@ export type League = z.infer<typeof League>;
 export const LeagueResponse = z.strictObject({ league: League });
 export type LeagueResponse = z.infer<typeof LeagueResponse>;
 
+const atLeastOneKey = (patch: object) => Object.keys(patch).length > 0;
+
+// A partial update. The upper bounds match the 0–99 range of a player's points, and keep a
+// typo from producing rules no game could satisfy.
+export const RulesBody = z
+  .strictObject({
+    targetScore: z.int().min(1).max(99).optional(),
+    winBy: z.int().min(1).max(99).optional(),
+    sinkPoints: z.int().min(0).max(99).optional(),
+    sinkEndsGame: z.boolean().optional(),
+  })
+  .refine(atLeastOneKey, 'Change at least one rule');
+export type RulesBody = z.input<typeof RulesBody>;
+
+export const LeagueSettings = z.strictObject({
+  confirmationWindowDays: z.int(),
+  exhibitionCorrectionWindowDays: z.int(),
+});
+export type LeagueSettings = z.infer<typeof LeagueSettings>;
+
+// A partial update, with the same ranges as the database's check constraints.
+export const SettingsBody = z
+  .strictObject({
+    confirmationWindowDays: z.int().min(1).max(30).optional(),
+    exhibitionCorrectionWindowDays: z.int().min(0).max(365).optional(),
+  })
+  .refine(atLeastOneKey, 'Change at least one setting');
+export type SettingsBody = z.input<typeof SettingsBody>;
+
+export const AUDIT_PAGE_MAX = 100;
+
+// Query strings arrive as strings. Only plain digits count as a limit, so "1e2" and " 5"
+// are rejected rather than coerced.
+export const AuditQuery = z.strictObject({
+  before: z.uuid().optional(),
+  limit: z
+    .string()
+    .regex(/^[0-9]{1,3}$/, 'Expected a whole number')
+    .transform(Number)
+    .pipe(z.int().min(1).max(AUDIT_PAGE_MAX))
+    .optional(),
+});
+export type AuditQuery = z.input<typeof AuditQuery>;
+
+const auditEventFields = {
+  id: z.uuid(),
+  createdAt: z.iso.datetime(),
+  actor: z.strictObject({ membershipId: z.uuid(), displayName: z.string() }),
+  // Set when a commissioner acted on a game they played in.
+  actorWasParticipant: z.boolean(),
+  targetId: z.uuid(),
+};
+
+// One entry in the league's append-only log of commissioner actions. Each action has its
+// own `details` shape, which never holds names, emails, or tokens.
+export const AuditEvent = z.discriminatedUnion('action', [
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('league.rules_updated'),
+    targetType: z.literal('league'),
+    details: z.strictObject({ before: LeagueRules, after: LeagueRules }),
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('league.settings_updated'),
+    targetType: z.literal('league'),
+    details: z.strictObject({ before: LeagueSettings, after: LeagueSettings }),
+  }),
+]);
+export type AuditEvent = z.infer<typeof AuditEvent>;
+
+// Newest first. `nextBefore` is the `before` cursor for the next page, or null at the end.
+export const AuditResponse = z.strictObject({
+  events: z.array(AuditEvent),
+  nextBefore: z.uuid().nullable(),
+});
+export type AuditResponse = z.infer<typeof AuditResponse>;
+
 // `email` is present only on pending members, and only when a commissioner is asking.
 export const Member = z.strictObject({
   id: z.uuid(),

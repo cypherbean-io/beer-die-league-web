@@ -22,6 +22,15 @@ export function errorBody(code: string, message: string, details?: unknown): Err
   return { error: details === undefined ? { code, message } : { code, message, details } };
 }
 
+function parseOr422<S extends z.ZodType>(schema: S, raw: unknown, message: string): z.output<S> {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    const details = parsed.error.issues.map(({ path, message }) => ({ path, message }));
+    throw new ApiError(422, 'VALIDATION', message, details);
+  }
+  return parsed.data;
+}
+
 // Parses the JSON body with a strict core schema; any structural problem is 422 VALIDATION.
 export async function readJson<S extends z.ZodType>(c: Context, schema: S): Promise<z.output<S>> {
   let raw: unknown;
@@ -30,12 +39,12 @@ export async function readJson<S extends z.ZodType>(c: Context, schema: S): Prom
   } catch {
     throw new ApiError(422, 'VALIDATION', 'Request body must be valid JSON');
   }
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    const details = parsed.error.issues.map(({ path, message }) => ({ path, message }));
-    throw new ApiError(422, 'VALIDATION', 'Invalid request body', details);
-  }
-  return parsed.data;
+  return parseOr422(schema, raw, 'Invalid request body');
+}
+
+// The query-string counterpart of readJson. A repeated parameter keeps its first value.
+export function readQuery<S extends z.ZodType>(c: Context, schema: S): z.output<S> {
+  return parseOr422(schema, c.req.query(), 'Invalid query string');
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

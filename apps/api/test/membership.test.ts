@@ -15,7 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createApp } from '../src/app.ts';
 import { FixedClock } from '../src/clock.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
-import { freshDatabase } from './support/db.ts';
+import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
 import { type Caller, client, createLeague, signIn } from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
@@ -53,9 +53,7 @@ beforeEach(async () => {
   sent = [];
   api = await startApi(database.url, { clock });
   call = client(api.baseUrl);
-  await api.db.execute(
-    sql`truncate table invites, memberships, leagues, email_outbox, sessions, auth_codes, rate_limits, users cascade`,
-  );
+  await resetTables(api.db);
 });
 
 afterEach(async () => {
@@ -71,19 +69,6 @@ function drain() {
     authSecret: api.authSecret,
     log: (entry) => api.logs.push(entry),
   });
-}
-
-// Waits (bounded) until `n` backends in this test's database are blocked on a lock.
-async function waitForLockWaiters(n: number): Promise<void> {
-  for (let i = 0; i < 500; i++) {
-    const [row] = await api.db.execute<{ waiting: number }>(
-      sql`select count(*)::int as waiting from pg_stat_activity
-          where datname = current_database() and wait_event_type = 'Lock'`,
-    );
-    if (row!.waiting >= n) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`fewer than ${n} backends ever waited on a lock`);
 }
 
 async function errorCode(res: Response): Promise<string> {
@@ -607,7 +592,7 @@ describe('roles', () => {
         setRole(l, l.commissioner, bo.membershipId, 'member'),
         setRole(l, bo.caller, l.commissionerMembershipId, 'member'),
       ]);
-      await waitForLockWaiters(2);
+      await waitForLockWaiters(api.db, 2);
     });
     const statuses = (await demotions!).map((r) => r.status).sort();
 
@@ -645,6 +630,19 @@ type Route = { method: string; path: string; commissioner: boolean; body?: unkno
 
 const LEAGUE_ROUTES: Route[] = [
   { method: 'GET', path: '/api/leagues/:leagueId', commissioner: false },
+  {
+    method: 'PATCH',
+    path: '/api/leagues/:leagueId/rules',
+    commissioner: true,
+    body: { targetScore: 21 },
+  },
+  {
+    method: 'PATCH',
+    path: '/api/leagues/:leagueId/settings',
+    commissioner: true,
+    body: { confirmationWindowDays: 3 },
+  },
+  { method: 'GET', path: '/api/leagues/:leagueId/audit', commissioner: false },
   { method: 'GET', path: '/api/leagues/:leagueId/members', commissioner: false },
   {
     method: 'POST',

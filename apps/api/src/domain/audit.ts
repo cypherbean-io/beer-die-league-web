@@ -1,0 +1,74 @@
+import { AUDIT_PAGE_MAX, AuditEvent, type AuditResponse } from '@beer-die/core';
+import { and, desc, eq, lt } from 'drizzle-orm';
+import type { Db, Tx } from '../db/client.ts';
+import { auditEvents, memberships } from '../db/schema.ts';
+import type { Actor } from './membership.ts';
+
+const DEFAULT_PAGE = 50;
+
+// What a caller supplies; the log adds the id, time, league, and actor. Distributes over
+// the union, so each action keeps its own `details` shape.
+type Recordable<E extends AuditEvent> = E extends AuditEvent
+  ? Pick<E, 'action' | 'targetType' | 'targetId' | 'actorWasParticipant' | 'details'>
+  : never;
+export type AuditRecord = Recordable<AuditEvent>;
+
+// Runs inside the transaction that makes the change, so the action and its entry commit
+// together or not at all.
+export async function recordAudit(
+  tx: Tx,
+  actor: Actor,
+  record: AuditRecord,
+  now: Date,
+): Promise<void> {
+  await tx.insert(auditEvents).values({
+    ...record,
+    leagueId: actor.leagueId,
+    actorMembershipId: actor.id,
+    createdAt: now,
+  });
+}
+
+// Every member may read the log. Newest first, paging backwards with a `before` cursor.
+export async function listAudit(
+  db: Db,
+  actor: Actor,
+  query: { before?: string | undefined; limit?: number | undefined },
+): Promise<AuditResponse> {
+  const limit = Math.min(query.limit ?? DEFAULT_PAGE, AUDIT_PAGE_MAX);
+  const rows = await db
+    .select({
+      id: auditEvents.id,
+      createdAt: auditEvents.createdAt,
+      actorMembershipId: auditEvents.actorMembershipId,
+      actorDisplayName: memberships.displayName,
+      actorWasParticipant: auditEvents.actorWasParticipant,
+      action: auditEvents.action,
+      targetType: auditEvents.targetType,
+      targetId: auditEvents.targetId,
+      details: auditEvents.details,
+    })
+    .from(auditEvents)
+    .innerJoin(memberships, eq(memberships.id, auditEvents.actorMembershipId))
+    .where(
+      and(
+        eq(auditEvents.leagueId, actor.leagueId),
+        query.before === undefined ? undefined : lt(auditEvents.id, query.before),
+      ),
+    )
+    .orderBy(desc(auditEvents.id))
+    // One extra row tells whether another page exists.
+    .limit(limit + 1);
+
+  const page = rows.slice(0, limit);
+  // Parsed rather than cast: a row whose stored shape has drifted fails here, loudly,
+  // instead of reaching clients.
+  const events = page.map(({ actorMembershipId, actorDisplayName, createdAt, ...row }) =>
+    AuditEvent.parse({
+      ...row,
+      createdAt: createdAt.toISOString(),
+      actor: { membershipId: actorMembershipId, displayName: actorDisplayName },
+    }),
+  );
+  return { events, nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null };
+}

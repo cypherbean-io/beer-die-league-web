@@ -74,10 +74,18 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
       <Link href="/members" testID="members-link" style={styles.link}>
         Members
       </Link>
+      <Link href="/audit" testID="audit-link" style={styles.link}>
+        League log
+      </Link>
       {membership.role === 'commissioner' && (
-        <Link href="/invites" testID="invites-link" style={styles.link}>
-          Invite players
-        </Link>
+        <>
+          <Link href="/invites" testID="invites-link" style={styles.link}>
+            Invite players
+          </Link>
+          <Link href="/league-settings" testID="league-settings-link" style={styles.link}>
+            Rules and settings
+          </Link>
+        </>
       )}
     </>
   );
