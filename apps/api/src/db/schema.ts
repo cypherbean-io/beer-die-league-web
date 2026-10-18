@@ -167,6 +167,32 @@ export const memberships = pgTable(
   ],
 );
 
+// The league's log of commissioner actions, visible to every member. Append-only: triggers
+// (migration 0004) refuse UPDATE, DELETE, and TRUNCATE, even for the table's owner. Only a
+// superuser can switch them off, so the production app role (delivery slice 8) must be
+// neither, and lack those grants too. `details` never holds names, emails, or tokens, so
+// deleting an account never needs to rewrite it.
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    actorMembershipId: uuid('actor_membership_id')
+      .notNull()
+      .references(() => memberships.id),
+    action: text('action').notNull(),
+    targetType: text('target_type').notNull(),
+    targetId: uuid('target_id').notNull(),
+    actorWasParticipant: boolean('actor_was_participant').notNull(),
+    details: jsonb('details').notNull(),
+    createdAt: ts('created_at').notNull(),
+  },
+  // The log is read newest first, paging on the (time-ordered) UUIDv7 id.
+  (t) => [index('audit_events_league_id_id_idx').on(t.leagueId, t.id)],
+);
+
 // A shareable join link. Only the SHA-256 of its token is stored; the link is shown once.
 export const invites = pgTable(
   'invites',

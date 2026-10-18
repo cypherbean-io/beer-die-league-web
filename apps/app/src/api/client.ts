@@ -1,4 +1,5 @@
 import {
+  AuditResponse,
   CreateInviteResponse,
   ErrorBody,
   HealthResponse,
@@ -12,6 +13,8 @@ import {
   type MembershipRole,
   MeResponse,
   type MyMembership,
+  type RulesBody,
+  type SettingsBody,
   VerifyCodeResponse,
 } from '@beer-die/core';
 
@@ -39,7 +42,11 @@ async function failure(res: Response): Promise<ApiRequestError> {
 
 // Writes are always JSON: the API refuses anything else as a CSRF defence, even a bodiless
 // DELETE.
-function sendJson(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<Response> {
+function sendJson(
+  method: 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<Response> {
   return fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -102,6 +109,25 @@ export async function joinLeague(token: string, displayName: string): Promise<My
 
 export async function getLeague(leagueId: string): Promise<League> {
   return (await getJson(leaguePath(leagueId), LeagueResponse)).league;
+}
+
+// Send only the fields that changed, so a concurrent edit to another field survives.
+export async function updateRules(leagueId: string, patch: RulesBody): Promise<League> {
+  const res = await sendJson('PATCH', `${leaguePath(leagueId)}/rules`, patch);
+  if (!res.ok) throw await failure(res);
+  return LeagueResponse.parse(await res.json()).league;
+}
+
+export async function updateSettings(leagueId: string, patch: SettingsBody): Promise<League> {
+  const res = await sendJson('PATCH', `${leaguePath(leagueId)}/settings`, patch);
+  if (!res.ok) throw await failure(res);
+  return LeagueResponse.parse(await res.json()).league;
+}
+
+// Newest first; pass the previous page's `nextBefore` to read further back.
+export async function getAudit(leagueId: string, before?: string): Promise<AuditResponse> {
+  const query = before === undefined ? '' : `?before=${encodeURIComponent(before)}`;
+  return getJson(`${leaguePath(leagueId)}/audit${query}`, AuditResponse);
 }
 
 export async function getMembers(leagueId: string): Promise<Member[]> {

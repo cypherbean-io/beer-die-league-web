@@ -5,7 +5,7 @@ import nodemailer from 'nodemailer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
-import { freshDatabase } from './support/db.ts';
+import { freshDatabase, resetTables } from './support/db.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -43,9 +43,7 @@ beforeEach(async () => {
   clock = new FixedClock('2026-10-17T12:00:00.000Z');
   sent = [];
   api = await startApi(database.url, { clock });
-  await api.db.execute(
-    sql`truncate table email_outbox, sessions, auth_codes, rate_limits, users cascade`,
-  );
+  await resetTables(api.db);
 });
 
 afterEach(async () => {

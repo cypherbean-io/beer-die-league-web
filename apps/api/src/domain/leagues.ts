@@ -1,8 +1,11 @@
-import { type League, nameKey } from '@beer-die/core';
+import { type League, type LeagueSettings, nameKey, type Rules } from '@beer-die/core';
 import { and, eq } from 'drizzle-orm';
 import { findOrCreateUser } from '../auth/otp.ts';
-import type { Db } from '../db/client.ts';
+import type { Clock } from '../clock.ts';
+import type { Db, Tx } from '../db/client.ts';
 import { leagues, memberships, users } from '../db/schema.ts';
+import { recordAudit } from './audit.ts';
+import { type Actor, assertCommissioner } from './membership.ts';
 
 // Bootstrap only (the CLI): a league plus its first commissioner, approved. The commissioner
 // signs in later with the same email. Inputs are already parsed with the core schemas.
@@ -56,20 +59,128 @@ export async function promoteCommissioner(
   return row?.id ?? null;
 }
 
-// `leagueId` always comes from the caller's resolved membership, so the row exists.
-export async function getLeague(db: Db, leagueId: string): Promise<League> {
-  const [row] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
-  if (!row) throw new Error('league of a resolved membership is missing');
+type LeagueRow = typeof leagues.$inferSelect;
+
+function rulesOf(row: LeagueRow): Rules {
   return {
-    id: row.id,
-    name: row.name,
-    rules: {
-      targetScore: row.targetScore,
-      winBy: row.winBy,
-      sinkPoints: row.sinkPoints,
-      sinkEndsGame: row.sinkEndsGame,
-    },
+    targetScore: row.targetScore,
+    winBy: row.winBy,
+    sinkPoints: row.sinkPoints,
+    sinkEndsGame: row.sinkEndsGame,
+  };
+}
+
+function settingsOf(row: LeagueRow): LeagueSettings {
+  return {
     confirmationWindowDays: row.confirmationWindowDays,
     exhibitionCorrectionWindowDays: row.exhibitionCorrectionWindowDays,
   };
+}
+
+function toLeague(row: LeagueRow): League {
+  return { id: row.id, name: row.name, rules: rulesOf(row), ...settingsOf(row) };
+}
+
+const missingLeague = () => new Error('league of a resolved membership is missing');
+
+// `leagueId` always comes from the caller's resolved membership, so the row exists.
+export async function getLeague(db: Db, leagueId: string): Promise<League> {
+  const [row] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
+  if (!row) throw missingLeague();
+  return toLeague(row);
+}
+
+// Locks the league row, the lock setRole also takes, then re-reads the actor's role under
+// it. So a commissioner demoted while the request waited can't edit, and concurrent edits
+// each read the values the previous one wrote, which keeps every audit entry's "before"
+// accurate.
+async function lockForCommissionerEdit(tx: Tx, actor: Actor): Promise<LeagueRow> {
+  const [row] = await tx.select().from(leagues).where(eq(leagues.id, actor.leagueId)).for('update');
+  if (!row) throw missingLeague();
+  const [self] = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')));
+  assertCommissioner({ ...actor, role: self?.role ?? 'member' });
+  return row;
+}
+
+function changed<T extends object>(before: T, after: T): boolean {
+  return (Object.keys(after) as Array<keyof T>).some((key) => after[key] !== before[key]);
+}
+
+type EditDeps = { db: Db; clock: Clock };
+
+// New rules apply to games submitted from now on. Each game keeps the rules snapshot from
+// its first submission, so nothing already submitted is re-validated. A patch that
+// changes nothing writes nothing and isn't audited.
+export async function updateRules(
+  deps: EditDeps,
+  actor: Actor,
+  patch: Partial<Rules>,
+): Promise<League> {
+  assertCommissioner(actor);
+  return deps.db.transaction(async (tx) => {
+    const row = await lockForCommissionerEdit(tx, actor);
+    const before = rulesOf(row);
+    const after: Rules = {
+      targetScore: patch.targetScore ?? before.targetScore,
+      winBy: patch.winBy ?? before.winBy,
+      sinkPoints: patch.sinkPoints ?? before.sinkPoints,
+      sinkEndsGame: patch.sinkEndsGame ?? before.sinkEndsGame,
+    };
+    if (!changed(before, after)) return toLeague(row);
+
+    const [updated] = await tx.update(leagues).set(after).where(eq(leagues.id, row.id)).returning();
+    if (!updated) throw new Error('locked league vanished');
+    await recordAudit(
+      tx,
+      actor,
+      {
+        action: 'league.rules_updated',
+        targetType: 'league',
+        targetId: row.id,
+        actorWasParticipant: false,
+        details: { before, after },
+      },
+      deps.clock.now(),
+    );
+    return toLeague(updated);
+  });
+}
+
+// A new confirmation window applies to games submitted from now on; a game's window is
+// fixed when it is first submitted (or reopened). Audited like a rules change.
+export async function updateSettings(
+  deps: EditDeps,
+  actor: Actor,
+  patch: Partial<LeagueSettings>,
+): Promise<League> {
+  assertCommissioner(actor);
+  return deps.db.transaction(async (tx) => {
+    const row = await lockForCommissionerEdit(tx, actor);
+    const before = settingsOf(row);
+    const after: LeagueSettings = {
+      confirmationWindowDays: patch.confirmationWindowDays ?? before.confirmationWindowDays,
+      exhibitionCorrectionWindowDays:
+        patch.exhibitionCorrectionWindowDays ?? before.exhibitionCorrectionWindowDays,
+    };
+    if (!changed(before, after)) return toLeague(row);
+
+    const [updated] = await tx.update(leagues).set(after).where(eq(leagues.id, row.id)).returning();
+    if (!updated) throw new Error('locked league vanished');
+    await recordAudit(
+      tx,
+      actor,
+      {
+        action: 'league.settings_updated',
+        targetType: 'league',
+        targetId: row.id,
+        actorWasParticipant: false,
+        details: { before, after },
+      },
+      deps.clock.now(),
+    );
+    return toLeague(updated);
+  });
 }

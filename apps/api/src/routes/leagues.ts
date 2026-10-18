@@ -1,8 +1,10 @@
-import type { LeagueResponse } from '@beer-die/core';
+import { type LeagueResponse, RulesBody, SettingsBody } from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
 import { type LeagueEnv, requireMembership, requireSession } from '../auth/middleware.ts';
-import { getLeague } from '../domain/leagues.ts';
+import { getLeague, updateRules, updateSettings } from '../domain/leagues.ts';
+import { readJson } from '../http.ts';
+import { auditRoutes } from './audit.ts';
 import { leagueInviteRoutes } from './invites.ts';
 import { memberRoutes } from './members.ts';
 
@@ -15,6 +17,17 @@ export function leagueRoutes(deps: AppDeps) {
       const league = await getLeague(deps.db, c.get('membership')!.leagueId);
       return c.json({ league } satisfies LeagueResponse);
     })
+    .patch('/rules', async (c) => {
+      const patch = await readJson(c, RulesBody);
+      const league = await updateRules(deps, c.get('membership')!, patch);
+      return c.json({ league } satisfies LeagueResponse);
+    })
+    .patch('/settings', async (c) => {
+      const patch = await readJson(c, SettingsBody);
+      const league = await updateSettings(deps, c.get('membership')!, patch);
+      return c.json({ league } satisfies LeagueResponse);
+    })
     .route('/', memberRoutes(deps))
-    .route('/', leagueInviteRoutes(deps));
+    .route('/', leagueInviteRoutes(deps))
+    .route('/', auditRoutes(deps));
 }

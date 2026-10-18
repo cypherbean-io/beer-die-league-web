@@ -2,7 +2,7 @@ import { LeagueResponse, MeResponse } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
-import { freshDatabase } from './support/db.ts';
+import { freshDatabase, resetTables } from './support/db.ts';
 import { cli, client, createLeague, signIn } from './support/league.ts';
 import { startApi, type TestApi } from './support/server.ts';
 
@@ -23,7 +23,7 @@ beforeEach(async () => {
   clock = new FixedClock('2026-10-18T12:00:00.000Z');
   api = await startApi(database.url, { clock });
   call = client(api.baseUrl);
-  await api.db.execute(sql`truncate table invites, memberships, leagues, users cascade`);
+  await resetTables(api.db);
 });
 
 afterEach(async () => {
