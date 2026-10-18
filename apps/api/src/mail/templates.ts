@@ -1,3 +1,4 @@
+import { DisplayName } from '@beer-die/core';
 import { z } from 'zod';
 import { open, seal } from '../crypto.ts';
 
@@ -5,15 +6,22 @@ import { open, seal } from '../crypto.ts';
 // or tokens.
 
 export const SIGN_IN_CODE = 'sign_in_code';
-
-// Templates whose params hold a sealed secret; the outbox wipes their params once a row is
-// terminal.
-export const SENSITIVE_TEMPLATES: ReadonlySet<string> = new Set([SIGN_IN_CODE]);
+export const MEMBER_PENDING = 'member_pending';
 
 const SignInCodeParams = z.strictObject({ code: z.string(), expiresAt: z.iso.datetime() });
 
 export function signInCodeParams(key: Buffer, code: string, expiresAt: Date) {
   return { code: seal(key, code), expiresAt: expiresAt.toISOString() };
+}
+
+// Sent to commissioners. A display name and a link only: no email, no invite token.
+const MemberPendingParams = z.strictObject({
+  displayName: DisplayName,
+  link: z.url({ protocol: /^https?$/ }),
+});
+
+export function memberPendingParams(displayName: string, link: string) {
+  return { displayName, link };
 }
 
 export type Rendered = { subject: string; text: string };
@@ -25,7 +33,26 @@ export function renderEmail(
   params: unknown,
   ctx: { key: Buffer; now: Date },
 ): Render {
-  if (template !== SIGN_IN_CODE) return { drop: 'UNKNOWN_TEMPLATE' };
+  if (template === SIGN_IN_CODE) return renderSignInCode(params, ctx);
+  if (template === MEMBER_PENDING) return renderMemberPending(params);
+  return { drop: 'UNKNOWN_TEMPLATE' };
+}
+
+function renderMemberPending(params: unknown): Render {
+  const parsed = MemberPendingParams.safeParse(params);
+  if (!parsed.success) return { drop: 'BAD_PARAMS' };
+  return {
+    subject: 'A new member is awaiting approval',
+    text: [
+      `${parsed.data.displayName} asked to join your league and is waiting for approval.`,
+      '',
+      `Review pending members: ${parsed.data.link}`,
+      '',
+    ].join('\n'),
+  };
+}
+
+function renderSignInCode(params: unknown, ctx: { key: Buffer; now: Date }): Render {
   const parsed = SignInCodeParams.safeParse(params);
   if (!parsed.success) return { drop: 'BAD_PARAMS' };
   // A code the user can no longer redeem isn't worth sending.

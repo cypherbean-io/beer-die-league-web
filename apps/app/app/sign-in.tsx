@@ -1,9 +1,13 @@
 import { RequestCodeBody, SignInCode } from '@beer-die/core';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ApiRequestError, requestCode, verifyCode } from '../src/api/client';
+import { ApiRequestError, getMe, requestCode, verifyCode } from '../src/api/client';
+
+// An invite token (32 random bytes, base64url). Anything else in `?invite=` is ignored, so
+// the parameter can only ever lead back to a join screen.
+const INVITE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
 function messageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -16,6 +20,7 @@ function messageFor(error: unknown): string {
 export default function SignIn() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { invite } = useLocalSearchParams<{ invite?: string }>();
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -29,9 +34,10 @@ export default function SignIn() {
   });
   const verify = useMutation({
     mutationFn: () => verifyCode(email.trim(), code),
-    onSuccess: (result) => {
-      queryClient.setQueryData(['me'], { user: result.user });
-      router.replace('/');
+    onSuccess: async () => {
+      // /me carries the memberships Home needs, so load it before leaving this screen.
+      await queryClient.fetchQuery({ queryKey: ['me'], queryFn: getMe });
+      router.replace(invite && INVITE_TOKEN.test(invite) ? `/join/${invite}` : '/');
     },
   });
 

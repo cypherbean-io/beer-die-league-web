@@ -9,6 +9,8 @@ import { ApiError, errorBody } from './http.ts';
 import { type Log, safeErrorFields } from './log.ts';
 import { authRoutes } from './routes/auth.ts';
 import { healthRoutes } from './routes/health.ts';
+import { inviteRoutes } from './routes/invites.ts';
+import { leagueRoutes } from './routes/leagues.ts';
 import { meRoutes } from './routes/me.ts';
 
 export type AppDeps = {
@@ -64,5 +66,7 @@ export function createApp(deps: AppDeps) {
   return app
     .route('/', healthRoutes(deps.db))
     .route('/', authRoutes(deps))
-    .route('/', meRoutes(deps));
+    .route('/', meRoutes(deps))
+    .route('/', inviteRoutes(deps))
+    .route('/leagues/:leagueId', leagueRoutes(deps));
 }

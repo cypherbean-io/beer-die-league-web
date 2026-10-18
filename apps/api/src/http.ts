@@ -37,3 +37,12 @@ export async function readJson<S extends z.ZodType>(c: Context, schema: S): Prom
   }
   return parsed.data;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A path id that isn't a UUID can't name anything, so it is a 404, like any unknown id.
+export function idParam(c: Context, name: string): string {
+  const value = c.req.param(name);
+  if (!value || !UUID_PATTERN.test(value)) throw new ApiError(404, 'NOT_FOUND', 'Not found');
+  return value;
+}

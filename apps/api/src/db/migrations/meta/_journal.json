@@ -15,6 +15,13 @@
       "when": 1792270086110,
       "tag": "0001_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792334346142,
+      "tag": "0002_membership",
+      "breakpoints": true
     }
   ]
 }

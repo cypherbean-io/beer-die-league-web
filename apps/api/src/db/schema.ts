@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   customType,
   index,
@@ -8,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -74,8 +76,8 @@ export const rateLimits = pgTable('rate_limits', {
   count: integer('count').notNull(),
 });
 
-// Drained by the worker. `params` never holds stats or plaintext secrets; a sign-in code is
-// sealed with a key derived from AUTH_SECRET and wiped once the row is terminal.
+// Drained by the worker. `params` never holds stats or plaintext secrets (a sign-in code is
+// sealed with a key derived from AUTH_SECRET), and it is wiped once the row is terminal.
 export const emailOutbox = pgTable(
   'email_outbox',
   {
@@ -96,4 +98,90 @@ export const emailOutbox = pgTable(
       .on(t.nextAttemptAt)
       .where(sql`${t.sentAt} is null`),
   ],
+);
+
+// Rules and settings are edited in place (audited, slice 4); each game snapshots the rules at
+// its first submission, so editing them never re-validates existing games.
+export const leagues = pgTable(
+  'leagues',
+  {
+    id: id(),
+    name: text('name').notNull(),
+    targetScore: integer('target_score').notNull().default(11),
+    winBy: integer('win_by').notNull().default(2),
+    sinkPoints: integer('sink_points').notNull().default(0),
+    sinkEndsGame: boolean('sink_ends_game').notNull().default(false),
+    confirmationWindowDays: integer('confirmation_window_days').notNull().default(7),
+    exhibitionCorrectionWindowDays: integer('exhibition_correction_window_days')
+      .notNull()
+      .default(30),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    check('leagues_target_score_min', sql`${t.targetScore} >= 1`),
+    check('leagues_win_by_min', sql`${t.winBy} >= 1`),
+    check('leagues_sink_points_min', sql`${t.sinkPoints} >= 0`),
+    check(
+      'leagues_confirmation_window_days_range',
+      sql`${t.confirmationWindowDays} between 1 and 30`,
+    ),
+    check(
+      'leagues_exhibition_correction_window_days_range',
+      sql`${t.exhibitionCorrectionWindowDays} between 0 and 365`,
+    ),
+  ],
+);
+
+// The per-league identity. Games will reference memberships, not users, so deleting an
+// account can anonymize a player without rewriting game history. `name_key` (NFKC +
+// lowercase, derived by the server) keeps display names unique within a league, and a
+// name stays reserved for as long as its row exists.
+export const memberships = pgTable(
+  'memberships',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    displayName: text('display_name').notNull(),
+    nameKey: text('name_key').notNull(),
+    role: text('role', { enum: ['member', 'commissioner'] }).notNull(),
+    status: text('status', {
+      enum: ['pending', 'approved', 'removed', 'left', 'deleted'],
+    }).notNull(),
+    emailNotifications: boolean('email_notifications').notNull().default(true),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    unique('memberships_league_name_key_unique').on(t.leagueId, t.nameKey),
+    unique('memberships_league_user_unique').on(t.leagueId, t.userId),
+    index('memberships_user_id_idx').on(t.userId),
+    check('memberships_role_valid', sql`${t.role} in ('member', 'commissioner')`),
+    check(
+      'memberships_status_valid',
+      sql`${t.status} in ('pending', 'approved', 'removed', 'left', 'deleted')`,
+    ),
+  ],
+);
+
+// A shareable join link. Only the SHA-256 of its token is stored; the link is shown once.
+export const invites = pgTable(
+  'invites',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    tokenSha256: text('token_sha256').notNull().unique(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => memberships.id),
+    createdAt: ts('created_at').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    revokedAt: ts('revoked_at'),
+  },
+  (t) => [index('invites_league_id_idx').on(t.leagueId)],
 );
