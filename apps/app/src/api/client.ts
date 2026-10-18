@@ -16,6 +16,8 @@ import {
   type MembershipRole,
   MeResponse,
   type MyMembership,
+  type PartnershipStats,
+  PartnershipStatsResponse,
   type PlayerStats,
   PlayerStatResponse,
   PlayerStatsResponse,
@@ -167,6 +169,15 @@ export async function confirmRevision(
 export async function getPlayerStats(leagueId: string, scope: StatsScope): Promise<PlayerStats[]> {
   const path = `${leaguePath(leagueId)}/stats/players?scope=${encodeURIComponent(scope)}`;
   return (await getJson(path, PlayerStatsResponse)).players;
+}
+
+// Every pair with a counted game in the scope, by wins, then points, then names.
+export async function getPartnershipStats(
+  leagueId: string,
+  scope: StatsScope,
+): Promise<PartnershipStats[]> {
+  const path = `${leaguePath(leagueId)}/stats/partnerships?scope=${encodeURIComponent(scope)}`;
+  return (await getJson(path, PartnershipStatsResponse)).partnerships;
 }
 
 export async function getPlayerProfile(

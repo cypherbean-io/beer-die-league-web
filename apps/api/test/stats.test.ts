@@ -5,6 +5,9 @@ import {
   type Game,
   GameResponse,
   JoinResponse,
+  pairKey,
+  type PartnershipStats,
+  PartnershipStatsResponse,
   PlayerStatResponse,
   type PlayerStats,
   PlayerStatsResponse,
@@ -169,6 +172,32 @@ async function profile(t: League, as: Caller, p: Player, scope: string): Promise
   expect(res.status).toBe(200);
   return PlayerStatResponse.parse(await res.json()).player;
 }
+
+function getPartnerships(t: League, as: Caller, query: string): Promise<Response> {
+  return call('GET', `/api/leagues/${t.leagueId}/stats/partnerships${query}`, { as });
+}
+
+async function partnerships(t: League, as: Caller, scope: string): Promise<PartnershipStats[]> {
+  const res = await getPartnerships(t, as, `?scope=${scope}`);
+  expect(res.status).toBe(200);
+  return PartnershipStatsResponse.parse(await res.json()).partnerships;
+}
+
+// A partnership's two players as the API lists them: in pairKey order.
+function pair(a: Player, aName: string, b: Player, bName: string) {
+  const players = [
+    { membershipId: a.membershipId, displayName: aName },
+    { membershipId: b.membershipId, displayName: bName },
+  ];
+  return pairKey(a.membershipId, b.membershipId).startsWith(a.membershipId)
+    ? players
+    : players.reverse();
+}
+
+const keyOf = (p: PartnershipStats) =>
+  pairKey(p.players[0].membershipId, p.players[1].membershipId);
+
+const names = (p: PartnershipStats) => p.players.map((x) => x.displayName).sort();
 
 async function setStatus(p: Player, status: string): Promise<void> {
   await api.db.execute(sql`update memberships set status = ${status} where id = ${p.membershipId}`);
@@ -572,5 +601,277 @@ describe("a player's profile", () => {
     const res = await getProfile(t, t.ana.caller, membershipId, '?scope=combined');
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('partnership stats', () => {
+  it('counts nothing while fewer than four players have confirmed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+
+    expect(await partnerships(t, t.ana.caller, 'combined')).toEqual([]);
+  });
+
+  it("credits each side's pair with the result and the pair's combined points and sinks", async () => {
+    const t = await table();
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.ana, 6, 1), line(t.bo, 5)] },
+          B: { players: [line(t.cy, 5, 1), line(t.di, 4, 1)] },
+        },
+      }),
+    );
+
+    expect(await partnerships(t, t.bo.caller, 'combined')).toEqual([
+      {
+        players: pair(t.ana, 'Ana', t.bo, 'Bo'),
+        gamesPlayed: 1,
+        wins: 1,
+        losses: 0,
+        winPct: 1,
+        points: 11,
+        sinks: 1,
+      },
+      {
+        players: pair(t.cy, 'Cy', t.di, 'Di'),
+        gamesPlayed: 1,
+        wins: 0,
+        losses: 1,
+        winPct: 0,
+        points: 9,
+        sinks: 2,
+      },
+    ]);
+  });
+
+  it("adds up a pair's games played, wins, losses, points, and sinks", async () => {
+    const t = await table();
+    // Ana and Bo win 11–9, lose 9–11 with a sink each, then win 13–11 with two sinks.
+    await counted(t, game(t));
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.ana, 5, 1), line(t.bo, 4, 1)] },
+          B: { players: [line(t.cy, 6), line(t.di, 5)] },
+        },
+        winner: 'B',
+      }),
+    );
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.ana, 7, 2), line(t.bo, 6)] },
+          B: { players: [line(t.cy, 6), line(t.di, 5)] },
+        },
+      }),
+    );
+
+    const [anaAndBo] = await partnerships(t, t.cy.caller, 'combined');
+
+    expect(anaAndBo).toEqual({
+      players: pair(t.ana, 'Ana', t.bo, 'Bo'),
+      gamesPlayed: 3,
+      wins: 2,
+      losses: 1,
+      winPct: 2 / 3,
+      points: 33,
+      sinks: 4,
+    });
+  });
+
+  it('treats two players as one partnership whichever of them is listed first', async () => {
+    const t = await table();
+    await counted(t, game(t));
+    // Bo first on side A, then the pair on side B.
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.bo, 6), line(t.ana, 5)] },
+          B: { players: [line(t.di, 5), line(t.cy, 4)] },
+        },
+      }),
+    );
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.cy, 6), line(t.di, 5)] },
+          B: { players: [line(t.bo, 5), line(t.ana, 4)] },
+        },
+      }),
+    );
+
+    const listed = await partnerships(t, t.ana.caller, 'combined');
+
+    expect(listed.map((p) => [keyOf(p), p.gamesPlayed])).toEqual([
+      [pairKey(t.ana.membershipId, t.bo.membershipId), 3],
+      [pairKey(t.cy.membershipId, t.di.membershipId), 3],
+    ]);
+  });
+
+  it("lists each pair's players in pairKey order", async () => {
+    const t = await table();
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.bo, 6), line(t.ana, 5)] },
+          B: { players: [line(t.di, 5), line(t.cy, 4)] },
+        },
+      }),
+    );
+
+    const listed = await partnerships(t, t.ana.caller, 'combined');
+
+    expect(listed.map((p) => p.players.map((x) => x.membershipId).join(':'))).toEqual(
+      listed.map(keyOf),
+    );
+  });
+
+  // The pair is whoever was on the same side in the confirmed result (SPEC §3.7); opponents
+  // in one game are partners only in the games where they played together.
+  it('credits a pair only with the games its players played on the same side', async () => {
+    const t = await table();
+    await counted(t, game(t));
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.ana, 6), line(t.cy, 5)] },
+          B: { players: [line(t.bo, 5), line(t.di, 4)] },
+        },
+      }),
+    );
+
+    const listed = await partnerships(t, t.ana.caller, 'combined');
+
+    expect(listed.map((p) => [names(p), p.gamesPlayed, p.wins])).toEqual([
+      [['Ana', 'Bo'], 1, 1],
+      [['Ana', 'Cy'], 1, 1],
+      [['Bo', 'Di'], 1, 0],
+      [['Cy', 'Di'], 1, 0],
+    ]);
+  });
+
+  it('ranks partnerships by wins, then points, then names', async () => {
+    const t = await table();
+    // Joins last, so name order and join order disagree.
+    const al = await member(t, 'al@example.com', 'Al');
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(t.bo, 6), line(t.cy, 5)] },
+          B: { players: [line(al, 5), line(t.di, 4)] },
+        },
+      }),
+      [al],
+    );
+    await counted(
+      t,
+      game(t, {
+        sides: {
+          A: { players: [line(al, 6), line(t.di, 5)] },
+          B: { players: [line(t.bo, 5), line(t.cy, 4)] },
+        },
+      }),
+      [al],
+    );
+    for (let i = 0; i < 2; i++) {
+      await counted(
+        t,
+        game(t, {
+          sides: {
+            A: { players: [line(t.ana, 7), line(t.bo, 6)] },
+            B: { players: [line(t.cy, 6), line(t.di, 5)] },
+          },
+        }),
+      );
+    }
+
+    const listed = await partnerships(t, t.ana.caller, 'combined');
+
+    // Al and Di tie Bo and Cy on wins and points; Cy and Di outscore both but never win.
+    expect(listed.map((p) => [names(p), p.wins, p.points])).toEqual([
+      [['Ana', 'Bo'], 2, 26],
+      [['Al', 'Di'], 1, 20],
+      [['Bo', 'Cy'], 1, 20],
+      [['Cy', 'Di'], 0, 22],
+    ]);
+  });
+
+  it('shows an exhibition game in exhibition and combined, but not in all-time', async () => {
+    const t = await table();
+    await counted(t, game(t));
+
+    expect((await partnerships(t, t.ana.caller, 'exhibition')).map(names)).toEqual([
+      ['Ana', 'Bo'],
+      ['Cy', 'Di'],
+    ]);
+    expect((await partnerships(t, t.ana.caller, 'combined')).map(names)).toEqual([
+      ['Ana', 'Bo'],
+      ['Cy', 'Di'],
+    ]);
+    expect(await partnerships(t, t.ana.caller, 'alltime')).toEqual([]);
+  });
+
+  it('keeps the partnerships of a former member whose games still count', async () => {
+    const t = await table();
+    await counted(t, game(t));
+    await setStatus(t.cy, 'left');
+
+    expect((await partnerships(t, t.bo.caller, 'combined')).map(names)).toEqual([
+      ['Ana', 'Bo'],
+      ['Cy', 'Di'],
+    ]);
+  });
+
+  it("counts only this league's games for players in two leagues", async () => {
+    const x = await table();
+    // Cy and Di partner in both leagues, as different memberships.
+    const { self: yan, ...l } = await league('Garage League', 'yan@example.com', 'Yan');
+    const y: Table = {
+      ...l,
+      ana: yan,
+      bo: await member(l, 'bo@example.com', 'Bo'),
+      cy: await member(l, 'cy@example.com', 'Cy'),
+      di: await member(l, 'di@example.com', 'Di'),
+    };
+    await counted(x, game(x));
+    await counted(y, game(y));
+    await counted(y, game(y));
+
+    const inX = await partnerships(x, x.bo.caller, 'combined');
+    const inY = await partnerships(y, y.bo.caller, 'combined');
+
+    expect(inX.map((p) => [names(p), p.gamesPlayed])).toEqual([
+      [['Ana', 'Bo'], 1],
+      [['Cy', 'Di'], 1],
+    ]);
+    expect(inY.map((p) => [names(p), p.gamesPlayed])).toEqual([
+      [['Bo', 'Yan'], 2],
+      [['Cy', 'Di'], 2],
+    ]);
+  });
+
+  it.each([
+    ['no scope', ''],
+    ['an unknown scope', '?scope=lifetime'],
+    ['a season scope, which arrives with seasons', `?scope=season:${randomUUID()}`],
+    ['an unknown parameter', '?scope=combined&sort=wins'],
+  ])('rejects %s with 422 VALIDATION', async (_label, query) => {
+    const t = await table();
+
+    const res = await getPartnerships(t, t.bo.caller, query);
+
+    expect(res.status).toBe(422);
+    expect((await errorOf(res)).code).toBe('VALIDATION');
   });
 });

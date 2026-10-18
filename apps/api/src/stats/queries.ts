@@ -1,5 +1,6 @@
-import type { PlayerStats, StatsScope } from '@beer-die/core';
+import type { PartnershipStats, PlayerStats, StatsScope } from '@beer-die/core';
 import { and, asc, desc, eq, exists, or, type SQL, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { Db } from '../db/client.ts';
 import { countedResults, memberships } from '../db/schema.ts';
 import type { Actor } from '../domain/membership.ts';
@@ -114,4 +115,63 @@ export async function getPlayerStats(
     .groupBy(memberships.id);
   if (!row) throw new ApiError(404, 'NOT_FOUND', 'Not found');
   return withRates(row);
+}
+
+// A pair's totals, from both partners' rows in each game they played together: points and
+// sinks add up the two players, and each game counts once.
+const pairTotals = {
+  gamesPlayed: sql<number>`count(distinct ${countedResults.gameId})::int`,
+  wins: sql<number>`(count(distinct ${countedResults.gameId}) filter (where ${countedResults.won}))::int`,
+  points: sql<number>`sum(${countedResults.points})::int`,
+  sinks: sql<number>`sum(${countedResults.sinks})::int`,
+};
+
+// The SQL twin of pairKey: whichever partner a row belongs to, `first` is the lower id.
+const first = alias(memberships, 'first');
+const second = alias(memberships, 'second');
+const firstId = sql`least(${countedResults.membershipId}, ${countedResults.partnerMembershipId})`;
+const secondId = sql`greatest(${countedResults.membershipId}, ${countedResults.partnerMembershipId})`;
+
+// Every pair with a counted game in the scope, by wins, then points, then names. As with
+// players, one statement reads one snapshot.
+export async function listPartnershipStats(
+  db: Db,
+  actor: Actor,
+  scope: StatsScope,
+): Promise<PartnershipStats[]> {
+  const rows = await db
+    .select({
+      first: { membershipId: first.id, displayName: first.displayName },
+      second: { membershipId: second.id, displayName: second.displayName },
+      ...pairTotals,
+    })
+    .from(countedResults)
+    .innerJoin(first, eq(first.id, firstId))
+    .innerJoin(second, eq(second.id, secondId))
+    .where(
+      and(
+        eq(countedResults.leagueId, actor.leagueId),
+        eq(first.leagueId, actor.leagueId),
+        eq(second.leagueId, actor.leagueId),
+        inScope(scope),
+      ),
+    )
+    .groupBy(first.id, second.id)
+    .orderBy(
+      desc(pairTotals.wins),
+      desc(pairTotals.points),
+      asc(sql`least(${first.nameKey}, ${second.nameKey})`),
+      asc(sql`greatest(${first.nameKey}, ${second.nameKey})`),
+      asc(first.id),
+      asc(second.id),
+    );
+  return rows.map(({ first, second, gamesPlayed, wins, points, sinks }) => ({
+    players: [first, second],
+    gamesPlayed,
+    wins,
+    losses: gamesPlayed - wins,
+    winPct: wins / gamesPlayed,
+    points,
+    sinks,
+  }));
 }

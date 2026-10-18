@@ -3,6 +3,7 @@ import {
   AuditQuery,
   DisplayName,
   nameKey,
+  PartnershipStatsQuery,
   playerLines,
   PlayerStatsQuery,
   RulesBody,
@@ -181,9 +182,12 @@ describe('AuditQuery', () => {
   });
 });
 
-describe('PlayerStatsQuery', () => {
+describe.each([
+  ['PlayerStatsQuery', PlayerStatsQuery],
+  ['PartnershipStatsQuery', PartnershipStatsQuery],
+])('%s', (_name, StatsQuery) => {
   it.each(['alltime', 'exhibition', 'combined'])('accepts the scope %j', (scope) => {
-    expect(PlayerStatsQuery.parse({ scope })).toEqual({ scope });
+    expect(StatsQuery.parse({ scope })).toEqual({ scope });
   });
 
   it.each([
@@ -195,7 +199,7 @@ describe('PlayerStatsQuery', () => {
     ['a season scope', { scope: 'season:0199f3a2-5c1e-7a00-8000-000000000000' }],
     ['an unknown parameter', { scope: 'combined', sort: 'wins' }],
   ])('rejects %s', (_label, query) => {
-    expect(PlayerStatsQuery.safeParse(query).success).toBe(false);
+    expect(StatsQuery.safeParse(query).success).toBe(false);
   });
 });
 
