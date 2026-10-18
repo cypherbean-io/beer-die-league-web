@@ -10,7 +10,12 @@ export default defineConfig({
       },
       {
         extends: true,
-        test: { name: 'api', include: ['apps/api/test/**/*.test.ts'], env: localEnv },
+        test: {
+          name: 'api',
+          include: ['apps/api/test/**/*.test.ts'],
+          env: localEnv,
+          globalSetup: ['apps/api/test/globalSetup.ts'],
+        },
       },
     ],
   },

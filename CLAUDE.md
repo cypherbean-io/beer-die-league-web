@@ -30,7 +30,10 @@ it.
 | --- | --- |
 | Install | `npm install` |
 | Services (dev/test) | `docker compose up -d --wait db mailpit` |
-| Dev server | `npm run dev`: API on `:3000`, Expo web on `http://localhost:8081`, which proxies `/api` to the API |
+| Dev server | `npm run dev`: API on `:3000`, the outbox worker, and Expo web on `http://localhost:8081`, which proxies `/api` to the API. Run Migrate first. |
+| Migrate | `docker compose run --rm migrate`, after the services are up |
+| New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL |
+| Dev sign-in codes | Mailpit UI at `http://localhost:8025` (the worker delivers them within a few seconds) |
 | Test (all) | `npm test` (core unit tests + API integration tests; needs `db` running) |
 | Test (single file) | `npx vitest run <path/to/file.test.ts>` |
 | Lint | `npm run lint` (ESLint, then `prettier --check`) |
@@ -44,10 +47,7 @@ it.
 >
 > | Task | Command | Lands in |
 > | --- | --- | --- |
-> | Migrate | `docker compose run --rm migrate`, after the services are up | slice 2 (first table) |
-> | New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL | slice 2 |
 > | Bootstrap a league | `npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` | slice 2 |
-> | Dev sign-in codes | Mailpit UI at `http://localhost:8025` (Mailpit already runs; nothing sends mail yet) | slice 2 |
 > | E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` | slice 8 |
 > | Full `verify` | SPEC.md §6: the whole Compose stack plus E2E | slice 8 |
 

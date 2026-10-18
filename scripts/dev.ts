@@ -1,11 +1,17 @@
-// Runs the API and the Expo web dev server together. Stopping either stops both.
+// Runs the API, the worker, and the Expo web dev server together. Stopping any stops all.
 import { spawn } from 'node:child_process';
 import { localEnv } from './local-env.ts';
 
 const env = { ...process.env, ...localEnv };
 
-const children = ['apps/api', 'apps/app'].map((workspace) =>
-  spawn('npm', ['run', 'dev', '-w', workspace], { stdio: 'inherit', env }),
+const scripts = [
+  ['apps/api', 'dev'],
+  ['apps/api', 'dev:worker'],
+  ['apps/app', 'dev'],
+] as const;
+
+const children = scripts.map(([workspace, script]) =>
+  spawn('npm', ['run', script, '-w', workspace], { stdio: 'inherit', env }),
 );
 
 for (const child of children) {

@@ -27,5 +27,19 @@ services:
       timeout: 3s
       retries: 30
 
+  # One-shot: applies the committed migrations. Dev/test only: it runs the host checkout
+  # (and its node_modules) read-only; delivery slice 8 switches it to the API image.
+  migrate:
+    image: node:26-alpine
+    working_dir: /repo/apps/api
+    command: ['node', 'src/db/migrate.ts']
+    environment:
+      DATABASE_URL: postgres://postgres@db:5432/beerdie
+    volumes:
+      - .:/repo:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   db-data:

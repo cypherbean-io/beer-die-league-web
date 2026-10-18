@@ -1,14 +1,16 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
+import { systemClock } from './clock.ts';
+import { loadConfig } from './config.ts';
 import { createDb } from './db/client.ts';
+import { stdoutLog } from './log.ts';
 
 const PORT = 3000;
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error('DATABASE_URL is required');
+const config = loadConfig(process.env);
+const { db } = createDb(config.databaseUrl);
+const app = createApp({ db, clock: systemClock, config, log: stdoutLog });
 
-const { db } = createDb(databaseUrl);
-
-serve({ fetch: createApp({ db }).fetch, port: PORT }, (info) => {
-  console.log(JSON.stringify({ level: 'info', msg: 'api listening', port: info.port }));
+serve({ fetch: app.fetch, port: PORT }, (info) => {
+  stdoutLog({ level: 'info', msg: 'api listening', port: info.port });
 });
