@@ -8,7 +8,7 @@ import {
   playerLines,
   type SubmitGameBody,
 } from '@beer-die/core';
-import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
@@ -61,15 +61,17 @@ function requestPath(body: SubmitGameBody, path: Path): Path {
 }
 
 // The same submitter retrying the same key gets the game it created, as long as the payload
-// matches. Runs before any validation, so a retry still succeeds after the rules change.
+// matches, with a lapsed window settled first. Runs before any validation, so a retry still
+// succeeds after the rules change.
 async function findReplay(
   tx: Tx,
   actor: Actor,
   body: SubmitGameBody,
   payloadSha256: string,
+  now: Date,
 ): Promise<Game | null> {
   const [existing] = await tx
-    .select({ id: games.id, payloadSha256: games.payloadSha256 })
+    .select()
     .from(games)
     .where(
       and(
@@ -77,7 +79,8 @@ async function findReplay(
         eq(games.submittedBy, actor.id),
         eq(games.idempotencyKey, body.idempotencyKey),
       ),
-    );
+    )
+    .for('update');
   if (!existing) return null;
   if (existing.payloadSha256 !== payloadSha256) {
     throw new ApiError(
@@ -86,6 +89,7 @@ async function findReplay(
       'A different game was already submitted with this idempotency key',
     );
   }
+  await settleExpired(tx, existing, now);
   return loadGame(tx, existing.id);
 }
 
@@ -102,7 +106,7 @@ export async function submitGame(
   const payloadSha256 = payloadHash(body);
 
   return deps.db.transaction(async (tx) => {
-    const replay = await findReplay(tx, actor, body, payloadSha256);
+    const replay = await findReplay(tx, actor, body, payloadSha256, now);
     if (replay) return { game: replay, created: false };
 
     const [league] = await tx.select().from(leagues).where(eq(leagues.id, actor.leagueId));
@@ -192,7 +196,7 @@ export async function submitGame(
       .onConflictDoNothing({ target: [games.leagueId, games.submittedBy, games.idempotencyKey] })
       .returning({ id: games.id });
     if (!game) {
-      const raced = await findReplay(tx, actor, body, payloadSha256);
+      const raced = await findReplay(tx, actor, body, payloadSha256, now);
       if (!raced) throw new Error('conflicting game is missing');
       return { game: raced, created: false };
     }
@@ -275,6 +279,50 @@ async function settleExpired(tx: Tx, game: GameRow, now: Date): Promise<GameRow>
     .returning();
   if (!settled) throw new Error('locked game is missing');
   return settled;
+}
+
+const SWEEP_BATCH = 100;
+const SWEEP_MAX_BATCHES = 10;
+
+// The worker's half of expiry: settles games whose window has lapsed, in every league, a
+// batch per transaction and at most `maxBatches` batches per call, so a backlog can't hold
+// up the rest of the worker. `done` is false when lapsed games may remain. A game a write
+// holds locked is skipped; that write settles it itself. Correctness never depends on this
+// running.
+export async function sweepExpired(
+  deps: Deps,
+  {
+    batchSize = SWEEP_BATCH,
+    maxBatches = SWEEP_MAX_BATCHES,
+  }: { batchSize?: number; maxBatches?: number } = {},
+): Promise<{ expired: number; done: boolean }> {
+  for (const [name, value] of [
+    ['batchSize', batchSize],
+    ['maxBatches', maxBatches],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new RangeError(`${name} must be a positive integer`);
+    }
+  }
+  const now = deps.clock.now();
+  let expired = 0;
+  for (let i = 0; i < maxBatches; i++) {
+    // Settling clears open_revision_id, so a game never matches twice.
+    const batch = await deps.db.transaction(async (tx) => {
+      const lapsed = await tx
+        .select()
+        .from(games)
+        .where(and(isNotNull(games.openRevisionId), lte(games.windowExpiresAt, now)))
+        .orderBy(asc(games.windowExpiresAt), asc(games.id))
+        .limit(batchSize)
+        .for('update', { skipLocked: true });
+      for (const game of lapsed) await settleExpired(tx, game, now);
+      return lapsed.length;
+    });
+    expired += batch;
+    if (batch < batchSize) return { expired, done: true };
+  }
+  return { expired, done: false };
 }
 
 // THE confirmation transition (SPEC §3.4), and the only code that confirms a revision. The

@@ -12,6 +12,7 @@ import {
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
+import { sweepExpired } from '../src/domain/games.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
 import { type Caller, client, createLeague, signIn } from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
@@ -148,7 +149,8 @@ type TableName =
   | 'revision_players'
   | 'confirmations'
   | 'audit_events'
-  | 'email_outbox';
+  | 'email_outbox'
+  | 'counted_results';
 
 async function rows(table: TableName) {
   const [row] = await api.db.execute<{ n: number }>(
@@ -199,6 +201,13 @@ async function countedRevision(gameId: string): Promise<string | null> {
 async function storedStatus(gameId: string): Promise<string> {
   const [row] = await api.db.execute<{ status: string }>(
     sql`select status from games where id = ${gameId}`,
+  );
+  return row!.status;
+}
+
+async function revisionStatus(revisionId: string): Promise<string> {
+  const [row] = await api.db.execute<{ status: string }>(
+    sql`select status from game_revisions where id = ${revisionId}`,
   );
   return row!.status;
 }
@@ -575,6 +584,24 @@ describe('idempotency', () => {
     expect(await rows('confirmations')).toBe(1);
   });
 
+  it('replays a game whose window has closed as expired', async () => {
+    const t = await table();
+    const body = game(t);
+    await submitted(t, t.ana.caller, body);
+    clock.advance(7 * DAY);
+
+    const retry = await submit(t, t.ana.caller, body);
+
+    expect(retry.status).toBe(200);
+    expect(GameResponse.parse(await retry.json()).game).toMatchObject({
+      status: 'expired',
+      windowExpiresAt: null,
+      openRevision: null,
+      confirmedRevision: null,
+    });
+    expect(await rows('games')).toBe(1);
+  });
+
   it('replays the original game even after the league rules change', async () => {
     const t = await table();
     const body = game(t);
@@ -874,6 +901,137 @@ describe('the confirmation window', () => {
       confirmedRevision: null,
     });
     expect(await storedStatus(g.id)).toBe('expired');
+  });
+});
+
+describe('the expiry sweep', () => {
+  const sweep = (opts?: { batchSize?: number; maxBatches?: number }) =>
+    sweepExpired({ db: api.db, clock }, opts);
+
+  it('leaves a game open 1 s before its window closes', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY - SECOND);
+
+    expect(await sweep()).toEqual({ expired: 0, done: true });
+
+    expect(await storedStatus(g.id)).toBe('pending');
+    expect(await revisionStatus(g.openRevision!.id)).toBe('open');
+  });
+
+  it('marks a game and its open revision expired once the window has closed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    expect(await sweep()).toEqual({ expired: 1, done: true });
+
+    const [stored] = await api.db.execute(
+      sql`select status, open_revision_id, window_expires_at, confirmed_revision_id
+          from games where id = ${g.id}`,
+    );
+    expect(stored).toEqual({
+      status: 'expired',
+      open_revision_id: null,
+      window_expires_at: null,
+      confirmed_revision_id: null,
+    });
+    expect(await revisionStatus(g.openRevision!.id)).toBe('expired');
+  });
+
+  it('never counts a game it expired, even when the last player then confirms', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    clock.advance(7 * DAY);
+    await sweep();
+
+    const late = await confirm(t, t.di.caller, g.id, g.openRevision!.id);
+
+    expect(late.status).toBe(409);
+    expect((await errorOf(late)).code).toBe('WINDOW_CLOSED');
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('counted_results')).toBe(0);
+  });
+
+  it('leaves a confirmed game counting', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    await confirmed(t, t.di.caller, g);
+    clock.advance(30 * DAY);
+
+    expect(await sweep()).toEqual({ expired: 0, done: true });
+
+    expect(await storedStatus(g.id)).toBe('confirmed');
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it('expires lapsed games in every league', async () => {
+    const x = await table();
+    const { self: yan, ...l } = await league('Garage League', 'yan@example.com', 'Yan');
+    const y: Table = {
+      ...l,
+      ana: yan,
+      bo: await member(l, 'pat@example.com', 'Pat'),
+      cy: await member(l, 'quinn@example.com', 'Quinn'),
+      di: await member(l, 'rae@example.com', 'Rae'),
+    };
+    const inX = await submitted(x, x.ana.caller, game(x));
+    const inY = await submitted(y, y.ana.caller, game(y));
+    clock.advance(7 * DAY);
+
+    expect(await sweep()).toEqual({ expired: 2, done: true });
+
+    expect(await storedStatus(inX.id)).toBe('expired');
+    expect(await storedStatus(inY.id)).toBe('expired');
+  });
+
+  it('skips a game a write holds locked, leaving that write to settle it', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    const swept = await api.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from games where id = ${g.id} for update`);
+      return sweep();
+    });
+
+    expect(swept).toEqual({ expired: 0, done: true });
+    expect(await storedStatus(g.id)).toBe('pending');
+  });
+
+  it('works through more lapsed games than one batch holds', async () => {
+    const t = await table();
+    const recorded: Game[] = [];
+    for (let i = 0; i < 5; i++) recorded.push(await submitted(t, t.ana.caller, game(t)));
+    clock.advance(7 * DAY);
+
+    expect(await sweep({ batchSize: 2 })).toEqual({ expired: 5, done: true });
+
+    for (const g of recorded) expect(await storedStatus(g.id)).toBe('expired');
+  });
+
+  it('stops at its batch budget and reports the backlog, which the next sweep clears', async () => {
+    const t = await table();
+    for (let i = 0; i < 5; i++) await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    const first = await sweep({ batchSize: 2, maxBatches: 2 });
+    const second = await sweep({ batchSize: 2, maxBatches: 2 });
+
+    expect(first).toEqual({ expired: 4, done: false });
+    expect(second).toEqual({ expired: 1, done: true });
+  });
+
+  it.each([
+    ['a batch size of 0', { batchSize: 0 }],
+    ['a fractional batch size', { batchSize: 1.5 }],
+    ['a batch budget of 0', { maxBatches: 0 }],
+  ])('refuses %s', async (_label, opts) => {
+    await expect(sweep(opts)).rejects.toThrow(RangeError);
   });
 });
 
