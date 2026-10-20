@@ -1,5 +1,6 @@
 import {
   AuditResponse,
+  type CorrectGameBody,
   CreateInviteResponse,
   ErrorBody,
   type Game,
@@ -144,6 +145,21 @@ export async function getAudit(leagueId: string, before?: string): Promise<Audit
 // rather than recording a second one.
 export async function submitGame(leagueId: string, body: SubmitGameBody): Promise<Game> {
   const res = await postJson(`${leaguePath(leagueId)}/games`, body);
+  if (!res.ok) throw await failure(res);
+  return GameResponse.parse(await res.json()).game;
+}
+
+// Based on the revision the player was shown: if the game changed since, the server refuses
+// it with STALE_REVISION rather than overwrite numbers the player hasn't seen.
+export async function correctGame(
+  leagueId: string,
+  gameId: string,
+  body: CorrectGameBody,
+): Promise<Game> {
+  const res = await postJson(
+    `${leaguePath(leagueId)}/games/${encodeURIComponent(gameId)}/revisions`,
+    body,
+  );
   if (!res.ok) throw await failure(res);
   return GameResponse.parse(await res.json()).game;
 }

@@ -1,98 +1,192 @@
 import {
   checkRules,
   checkStructure,
+  type CorrectGameBody,
+  type Game,
+  type GameRevision,
   type Member,
   type MyMembership,
   type PlayerLine,
   type RuleViolation,
   type Side,
   type StructureError,
-  type SubmitGameBody,
 } from '@beer-die/core';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Link, Redirect, Stack } from 'expo-router';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ApiRequestError, getLeague, getMembers, submitGame } from '../src/api/client';
+import {
+  ApiRequestError,
+  correctGame,
+  getInbox,
+  getLeague,
+  getMembers,
+  submitGame,
+} from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
 import { Button } from '../src/ui';
 
 const MAX_LINE_VALUE = 99;
 
-// Seats 0 and 1 are side A; seats 2 and 3 are side B. The submitter always holds seat 0,
-// because the server records a game only from one of its players.
+// Seats 0 and 1 are side A; seats 2 and 3 are side B. The author's own seat is fixed (seat 0
+// for a new game), because the server records a result only from one of its players.
 type Seat = { membershipId: string | null; points: number; sinks: number };
+
+// What the form sends, for a new game or a correction.
+type Result = Omit<CorrectGameBody, 'baseRevisionId'>;
+
+// A pending game being corrected, and the open revision whose numbers fill the form.
+type Base = { game: Game; revision: GameRevision };
 
 const SEATS_BY_SIDE: Record<Side, [number, number]> = { A: [0, 1], B: [2, 3] };
 const sideOf = (seat: number): Side => (seat < 2 ? 'A' : 'B');
 
-function messageFor(error: unknown): string {
+function messageFor(error: unknown, correcting: boolean): string {
   if (error instanceof ApiRequestError) {
     if (error.code === 'RULES_VIOLATION') {
-      return 'This result breaks the league rules, which may have just changed. Check the numbers, or submit it for commissioner review.';
+      return correcting
+        ? 'This result breaks the game’s rules. Check the numbers, or submit it for commissioner review.'
+        : 'This result breaks the league rules, which may have just changed. Check the numbers, or submit it for commissioner review.';
     }
     if (error.code === 'IDEMPOTENCY_MISMATCH') {
       return 'This game was already submitted with different numbers.';
     }
+    if (error.code === 'STALE_REVISION') {
+      return 'This game changed after you opened it, so your correction wasn’t saved. Check the latest numbers in your inbox.';
+    }
+    if (error.code === 'WINDOW_CLOSED') {
+      return 'The window to correct this game has closed, so it won’t count.';
+    }
     // Fixed server messages, which never contain user data.
     if (error.code === 'VALIDATION' || error.code === 'FORBIDDEN') return `${error.message}.`;
   }
-  return 'Couldn’t submit the game. Check your connection and try again. It won’t be recorded twice.';
+  return correcting
+    ? 'Couldn’t send the correction. Check your connection and try again.'
+    : 'Couldn’t submit the game. Check your connection and try again. It won’t be recorded twice.';
 }
 
 export default function RecordGame() {
   const me = useMe();
   const membership = currentMembership(me.data);
+  // Set when the form is opened from the inbox to correct a pending game.
+  const { correct } = useLocalSearchParams<{ correct?: string }>();
 
   if (me.data === null) return <Redirect href="/sign-in" />;
   if (me.data && membership?.status !== 'approved') return <Redirect href="/" />;
   if (!membership) return null;
+  if (correct !== undefined) return <CorrectionForm membership={membership} gameId={correct} />;
   return <RecordForm membership={membership} />;
 }
 
-function RecordForm({ membership }: { membership: MyMembership }) {
+// The inbox is where pending games are listed, so a correction starts from a game there. The
+// game is fetched once and then held, so the numbers can't change under the player; if the
+// game moves on meanwhile, the server refuses the correction.
+function CorrectionForm({ membership, gameId }: { membership: MyMembership; gameId: string }) {
   const { leagueId } = membership;
+  const game = useQuery({
+    queryKey: ['correction', leagueId, gameId],
+    queryFn: async () => (await getInbox(leagueId)).find((g) => g.id === gameId) ?? null,
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  if (game.isPending) return null;
+  const revision = game.data?.openRevision;
+  if (!game.data || !revision) {
+    return (
+      <View style={styles.container}>
+        <Stack.Screen options={{ title: 'Correct game' }} />
+        <Text testID="correction-unavailable" style={game.isError ? styles.error : undefined}>
+          {game.isError
+            ? 'Couldn’t load the game. Check your connection and try again.'
+            : 'This game is no longer waiting for your confirmation, so it can’t be corrected here.'}
+        </Text>
+        <Link href="/inbox" style={styles.link}>
+          Back to inbox
+        </Link>
+      </View>
+    );
+  }
+  return <RecordForm membership={membership} correcting={{ game: game.data, revision }} />;
+}
+
+function RecordForm({ membership, correcting }: { membership: MyMembership; correcting?: Base }) {
+  const { leagueId } = membership;
+  const queryClient = useQueryClient();
+  // Held from the first render: a correction names the revision whose numbers filled the form.
+  const [base] = useState(correcting);
   const league = useQuery({ queryKey: ['league', leagueId], queryFn: () => getLeague(leagueId) });
   const members = useQuery({
     queryKey: ['members', leagueId],
     queryFn: () => getMembers(leagueId),
   });
   // One key and play time per form, so submitting again after a failure resends the same
-  // game, which the server records at most once.
+  // game, which the server records at most once. A correction keeps the game's play time.
   const [draft] = useState(() => ({
     idempotencyKey: crypto.randomUUID(),
-    playedAt: new Date().toISOString(),
+    playedAt: base?.revision.playedAt ?? new Date().toISOString(),
   }));
-  const [seats, setSeats] = useState<Seat[]>(() => [
-    { membershipId: membership.id, points: 0, sinks: 0 },
-    { membershipId: null, points: 0, sinks: 0 },
-    { membershipId: null, points: 0, sinks: 0 },
-    { membershipId: null, points: 0, sinks: 0 },
-  ]);
-  const [winner, setWinner] = useState<Side | null>(null);
+  const [seats, setSeats] = useState<Seat[]>(() =>
+    base
+      ? base.revision.players.map((p) => ({
+          membershipId: p.membershipId,
+          points: p.points,
+          sinks: p.sinks,
+        }))
+      : [
+          { membershipId: membership.id, points: 0, sinks: 0 },
+          { membershipId: null, points: 0, sinks: 0 },
+          { membershipId: null, points: 0, sinks: 0 },
+          { membershipId: null, points: 0, sinks: 0 },
+        ],
+  );
+  const [mySeat] = useState(() =>
+    base ? base.revision.players.findIndex((p) => p.membershipId === membership.id) : 0,
+  );
+  const [winner, setWinner] = useState<Side | null>(base?.revision.winner ?? null);
   const [picking, setPicking] = useState<number | null>(null);
   const submit = useMutation({
-    mutationFn: (body: SubmitGameBody) => submitGame(leagueId, body),
+    mutationFn: (result: Result) =>
+      base
+        ? correctGame(leagueId, base.game.id, { baseRevisionId: base.revision.id, ...result })
+        : submitGame(leagueId, {
+            idempotencyKey: draft.idempotencyKey,
+            kind: 'exhibition',
+            ...result,
+          }),
+    onSuccess: () => {
+      if (base) void queryClient.invalidateQueries({ queryKey: ['inbox', leagueId] });
+    },
   });
+  const title = base ? 'Correct game' : 'Record game';
 
   if (submit.isSuccess) {
     return (
       <View style={styles.container}>
-        <Stack.Screen options={{ title: 'Record game' }} />
-        <Text testID="game-recorded" style={styles.heading}>
-          Game recorded
+        <Stack.Screen options={{ title }} />
+        <Text testID={base ? 'game-corrected' : 'game-recorded'} style={styles.heading}>
+          {base ? 'Correction sent' : 'Game recorded'}
         </Text>
-        <Text>It counts once the other three players confirm it.</Text>
-        <Link href="/" style={styles.link}>
-          Back to home
+        <Text>
+          {base
+            ? 'It counts once the other three players confirm the new numbers.'
+            : 'It counts once the other three players confirm it.'}
+        </Text>
+        <Link href={base ? '/inbox' : '/'} style={styles.link}>
+          {base ? 'Back to inbox' : 'Back to home'}
         </Link>
       </View>
     );
   }
 
-  const rules = league.data?.rules;
+  // A correction is checked against the rules the game was first submitted under.
+  const rules = base ? base.game.rulesSnapshot : league.data?.rules;
   const approved = members.data?.filter((m) => m.status === 'approved') ?? [];
-  const nameOf = (id: string | null) => approved.find((m) => m.id === id)?.displayName;
+  const nameOf = (id: string | null) =>
+    approved.find((m) => m.id === id)?.displayName ??
+    base?.revision.players.find((p) => p.membershipId === id)?.displayName;
   const update = (index: number, patch: Partial<Seat>) =>
     setSeats((current) => current.map((s, i) => (i === index ? { ...s, ...patch } : s)));
 
@@ -112,8 +206,7 @@ function RecordForm({ membership }: { membership: MyMembership }) {
 
   const send = (requestOverride: boolean) =>
     submit.mutate({
-      ...draft,
-      kind: 'exhibition',
+      playedAt: draft.playedAt,
       sides: {
         A: { players: SEATS_BY_SIDE.A.map((i) => lineOf(seats[i]!)) },
         B: { players: SEATS_BY_SIDE.B.map((i) => lineOf(seats[i]!)) },
@@ -121,13 +214,27 @@ function RecordForm({ membership }: { membership: MyMembership }) {
       winner: winner!,
       ...(requestOverride ? { requestOverride } : {}),
     });
+  const labels = base
+    ? { send: 'Send correction', pending: 'Sending…' }
+    : { send: 'Submit game', pending: 'Submitting…' };
+  // The game moved on or its window closed, so resending this form can only fail again.
+  const refused =
+    submit.error instanceof ApiRequestError &&
+    (submit.error.code === 'STALE_REVISION' || submit.error.code === 'WINDOW_CLOSED');
+  const blocked = submit.isPending || refused;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Stack.Screen options={{ title: 'Record game' }} />
+      <Stack.Screen options={{ title }} />
       <Text style={styles.muted}>
         Exhibition game. Enter each player&apos;s final points (sink points included) and sinks.
       </Text>
+      {base && (
+        <Text testID="correction-note" style={styles.muted}>
+          Correcting the numbers resets everyone else’s confirmation. The window to confirm doesn’t
+          restart.
+        </Text>
+      )}
       {(league.isError || members.isError) && (
         <Text style={styles.error}>Couldn’t load the league. Check your connection.</Text>
       )}
@@ -139,7 +246,11 @@ function RecordForm({ membership }: { membership: MyMembership }) {
               key={i}
               index={i}
               seat={seats[i]!}
-              name={i === 0 ? `${membership.displayName} (you)` : nameOf(seats[i]!.membershipId)}
+              // A correction keeps the game's four players (the server refuses anyone else).
+              fixed={base !== undefined || i === mySeat}
+              name={
+                i === mySeat ? `${membership.displayName} (you)` : nameOf(seats[i]!.membershipId)
+              }
               picking={picking === i}
               onPick={() => setPicking(picking === i ? null : i)}
               onChange={(patch) => update(i, patch)}
@@ -172,8 +283,10 @@ function RecordForm({ membership }: { membership: MyMembership }) {
 
       <Button
         testID="submit-game"
-        label={submit.isPending ? 'Submitting…' : submit.isError ? 'Retry' : 'Submit game'}
-        disabled={!complete || violations.length > 0 || submit.isPending}
+        label={
+          submit.isPending ? labels.pending : submit.isError && !refused ? 'Retry' : labels.send
+        }
+        disabled={!complete || violations.length > 0 || blocked}
         onPress={() => send(false)}
       />
       {complete && violations.length > 0 && (
@@ -181,13 +294,13 @@ function RecordForm({ membership }: { membership: MyMembership }) {
           testID="submit-for-review"
           label="Submit for commissioner review"
           variant="secondary"
-          disabled={submit.isPending}
+          disabled={blocked}
           onPress={() => send(true)}
         />
       )}
       {submit.isError && (
         <Text testID="submit-error" style={styles.error}>
-          {messageFor(submit.error)}
+          {messageFor(submit.error, base !== undefined)}
         </Text>
       )}
     </ScrollView>
@@ -201,17 +314,19 @@ function lineOf(seat: Seat) {
 type SeatRowProps = {
   index: number;
   seat: Seat;
+  // A seat whose player can't be changed: the author's own, or any seat in a correction.
+  fixed: boolean;
   name: string | undefined;
   picking: boolean;
   onPick: () => void;
   onChange: (patch: Partial<Seat>) => void;
 };
 
-function SeatRow({ index, seat, name, picking, onPick, onChange }: SeatRowProps) {
+function SeatRow({ index, seat, fixed, name, picking, onPick, onChange }: SeatRowProps) {
   const who = name ?? `Player ${index + 1}`;
   return (
     <View style={styles.seat} testID={`seat-${index}`}>
-      {index === 0 ? (
+      {fixed ? (
         <Text style={styles.name}>{who}</Text>
       ) : (
         <Button

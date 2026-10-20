@@ -697,6 +697,31 @@ const LEAGUE_ROUTES: Route[] = [
       winner: 'A',
     },
   },
+  // Y's commissioner gets 409 for the placeholder base revision; X's gets 404 for the game.
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/games/:gid/revisions',
+    commissioner: false,
+    body: {
+      baseRevisionId: '0199f3a2-5c1e-7a00-8000-0000000000ee',
+      playedAt: '2026-10-18T11:30:00.000Z',
+      sides: {
+        A: {
+          players: [
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000a', points: 6, sinks: 0 },
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000b', points: 5, sinks: 0 },
+          ],
+        },
+        B: {
+          players: [
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000c', points: 5, sinks: 0 },
+            { membershipId: '0199f3a2-5c1e-7a00-8000-00000000000d', points: 3, sinks: 0 },
+          ],
+        },
+      },
+      winner: 'A',
+    },
+  },
   {
     method: 'POST',
     path: '/api/leagues/:leagueId/games/:gid/revisions/:rid/confirm',

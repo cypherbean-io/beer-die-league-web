@@ -269,13 +269,9 @@ const SideBody = z.strictObject({ players: z.array(PlayerLineBody).length(2) });
 
 const PLAYED_AT_FLOOR = Date.parse('2000-01-01T00:00:00.000Z');
 
-// The first submission of a game. The rest of checkStructure, the membership checks, and
-// checkRules run on the server after this parses. `idempotencyKey` is generated once per
-// draft, so a retried submission returns the original game.
-export const SubmitGameBody = z.strictObject({
-  idempotencyKey: z.uuid(),
-  // Season games arrive with seasons (SPEC §3.10, slice 5).
-  kind: z.literal('exhibition'),
+// The result every revision of a game records. The rest of checkStructure, the membership
+// checks, and checkRules run on the server after this parses.
+const resultFields = {
   // The server refuses a time in the future. The floor keeps out years the database stores
   // but reads back wrong: a timestamp before year 100 comes back through `new Date()`, which
   // misparses it (0049 becomes 2049).
@@ -284,10 +280,28 @@ export const SubmitGameBody = z.strictObject({
     .refine((s) => Date.parse(s) >= PLAYED_AT_FLOOR, 'Choose a time in or after 2000'),
   sides: z.strictObject({ A: SideBody, B: SideBody }),
   winner: GameSide,
-  // Store a game that breaks the rules for a commissioner to review, instead of refusing it.
+  // Store a result that breaks the rules for a commissioner to review, instead of refusing it.
   requestOverride: z.boolean().optional(),
+};
+
+// The first submission of a game. `idempotencyKey` is generated once per draft, so a
+// retried submission returns the original game.
+export const SubmitGameBody = z.strictObject({
+  idempotencyKey: z.uuid(),
+  // Season games arrive with seasons (SPEC §3.10, slice 5).
+  kind: z.literal('exhibition'),
+  ...resultFields,
 });
 export type SubmitGameBody = z.input<typeof SubmitGameBody>;
+
+// A corrected result for a pending game, which becomes its new open revision. The game keeps
+// its kind. `baseRevisionId` is the open revision the author was shown; if the game has
+// moved on since, the correction is refused, so nobody overwrites numbers they haven't seen.
+export const CorrectGameBody = z.strictObject({
+  baseRevisionId: z.uuid(),
+  ...resultFields,
+});
+export type CorrectGameBody = z.input<typeof CorrectGameBody>;
 
 type SideLines = { players: Array<Omit<PlayerLine, 'side'>> };
 

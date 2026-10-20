@@ -1,14 +1,20 @@
 import {
   checkRules,
   checkStructure,
+  type CorrectGameBody,
   Game,
   type GamePlayer,
   type GameRevision,
   INBOX_MAX,
+  LeagueRules,
+  type PlayerLine,
   playerLines,
+  type RuleViolation,
+  type Rules,
+  type Side,
   type SubmitGameBody,
 } from '@beer-die/core';
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, max } from 'drizzle-orm';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
@@ -31,10 +37,29 @@ type Path = Array<string | number>;
 
 type GameRow = typeof games.$inferSelect;
 
+// What every revision records, from a first submission or a correction.
+type ResultBody = Pick<SubmitGameBody, 'playedAt' | 'sides' | 'winner' | 'requestOverride'>;
+
+// A result that passed checkResult, ready to store. `ids` are the players' ids in lower
+// case, in playerLines order.
+type CheckedResult = {
+  players: PlayerLine[];
+  ids: string[];
+  playedAt: Date;
+  winner: Side;
+  ruleViolations: RuleViolation[];
+};
+
 const invalid = (message: string, details: unknown) =>
   new ApiError(422, 'VALIDATION', message, details);
 
 const notFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
+
+const windowClosed = (action: string) =>
+  new ApiError(409, 'WINDOW_CLOSED', `The window to ${action} this game has closed`);
+
+const staleRevision = (action: string) =>
+  new ApiError(409, 'STALE_REVISION', `This version of the game can no longer be ${action}`);
 
 // A canonical form of everything but the idempotency key: fixed field order, lowercase ids,
 // and a normalized time, so a retried draft hashes the same however its JSON was laid out.
@@ -51,7 +76,7 @@ function payloadHash(body: SubmitGameBody): string {
 }
 
 // Maps a path into playerLines(body.sides) back onto the request's own shape.
-function requestPath(body: SubmitGameBody, path: Path): Path {
+function requestPath(body: ResultBody, path: Path): Path {
   const [head, index, ...rest] = path;
   if (head !== 'players' || typeof index !== 'number') return path;
   const onA = body.sides.A.players.length;
@@ -93,10 +118,153 @@ async function findReplay(
   return loadGame(tx, existing.id);
 }
 
+// The checks every revision passes before it is stored, in this order: the result's
+// structure, the author's place among the four players, for a correction the roster, the play
+// time, the players' memberships, and the rules. A result that breaks the rules is refused
+// with RULES_VIOLATION unless the author asks for commissioner review. `rules` is the league's
+// for a first submission and the game's snapshot for a correction. `roster` is a correction's
+// base players: a correction can fix the numbers and sides but not who played, or a player
+// could swap out the others, leaving them unable to see or contest the game.
+async function checkResult(
+  tx: Tx,
+  actor: Actor,
+  rules: Rules,
+  body: ResultBody,
+  now: Date,
+  roster?: ReadonlySet<string>,
+): Promise<CheckedResult> {
+  const players = playerLines(body.sides);
+  const result = { players, winner: body.winner };
+
+  const structure = checkStructure(rules, result);
+  if (structure.length > 0) {
+    throw invalid(
+      'The result is not a valid game',
+      structure.map((e) => ({ ...e, path: requestPath(body, e.path) })),
+    );
+  }
+
+  const ids = players.map((p) => p.membershipId.toLowerCase());
+  if (!ids.includes(actor.id)) {
+    throw new ApiError(403, 'FORBIDDEN', 'You can only record a game you played in');
+  }
+
+  if (roster) {
+    const outsiders = ids.flatMap((id, i) =>
+      roster.has(id)
+        ? []
+        : [
+            {
+              code: 'NOT_IN_GAME',
+              path: requestPath(body, ['players', i, 'membershipId']),
+              message: 'Not a player in this game',
+            },
+          ],
+    );
+    if (outsiders.length > 0) {
+      throw invalid(
+        'A correction can change the numbers but not who played. Record a new game instead',
+        outsiders,
+      );
+    }
+  }
+
+  const playedAt = new Date(body.playedAt);
+  if (playedAt.getTime() > now.getTime()) {
+    throw invalid('A game cannot be played in the future', [
+      { path: ['playedAt'], message: 'Choose a time that has already passed' },
+    ]);
+  }
+
+  // FOR SHARE holds each player's membership as approved until this commits, so a
+  // concurrent removal waits for the game and then sees it.
+  const approved = await tx
+    .select({ id: memberships.id })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.leagueId, actor.leagueId),
+        inArray(memberships.id, ids),
+        eq(memberships.status, 'approved'),
+      ),
+    )
+    .for('share');
+  const approvedIds = new Set(approved.map((m) => m.id));
+  const strangers = ids.flatMap((id, i) =>
+    approvedIds.has(id)
+      ? []
+      : [
+          {
+            path: requestPath(body, ['players', i, 'membershipId']),
+            message: 'Not an approved member of this league',
+          },
+        ],
+  );
+  if (strangers.length > 0) {
+    throw invalid('Every player must be an approved member of this league', strangers);
+  }
+
+  const ruleViolations = checkRules(rules, result);
+  if (ruleViolations.length > 0 && !body.requestOverride) {
+    throw new ApiError(
+      422,
+      'RULES_VIOLATION',
+      'The result breaks the league rules. A commissioner can review it.',
+      ruleViolations,
+    );
+  }
+  return { players, ids, playedAt, winner: body.winner, ruleViolations };
+}
+
+// Stores a checked result as the game's open revision, with the author's confirmation:
+// recording a result counts as confirming it. A result that breaks the rules awaits a
+// commissioner's review; nothing carries over from an earlier revision.
+async function openRevision(
+  tx: Tx,
+  actor: Actor,
+  gameId: string,
+  number: number,
+  result: CheckedResult,
+  now: Date,
+): Promise<void> {
+  const [revision] = await tx
+    .insert(gameRevisions)
+    .values({
+      gameId,
+      number,
+      status: 'open',
+      createdBy: actor.id,
+      playedAt: result.playedAt,
+      winner: result.winner,
+      ruleViolations: result.ruleViolations,
+      overrideStatus: result.ruleViolations.length > 0 ? 'requested' : null,
+      createdAt: now,
+    })
+    .returning({ id: gameRevisions.id });
+  if (!revision) throw new Error('insert returned no revision');
+
+  // An exhibition game has no teams, so nobody in it is a sub.
+  await tx.insert(revisionPlayers).values(
+    result.players.map((p, i) => ({
+      revisionId: revision.id,
+      side: p.side,
+      membershipId: result.ids[i]!,
+      isSub: false,
+      points: p.points,
+      sinks: p.sinks,
+    })),
+  );
+  await tx.insert(confirmations).values({
+    revisionId: revision.id,
+    membershipId: actor.id,
+    kind: 'player',
+    createdAt: now,
+  });
+  await tx.update(games).set({ openRevisionId: revision.id }).where(eq(games.id, gameId));
+}
+
 // Records the first submission of an exhibition game: revision 1, open, with the
-// submitter's confirmation. A game that breaks the rules is refused with RULES_VIOLATION
-// unless the submitter asks for commissioner review. `leagueId` always comes from the
-// actor's membership.
+// submitter's confirmation. `leagueId` always comes from the actor's membership.
 export async function submitGame(
   deps: Deps,
   actor: Actor,
@@ -117,66 +285,7 @@ export async function submitGame(
       sinkPoints: league.sinkPoints,
       sinkEndsGame: league.sinkEndsGame,
     };
-    const players = playerLines(body.sides);
-    const result = { players, winner: body.winner };
-
-    const structure = checkStructure(rules, result);
-    if (structure.length > 0) {
-      throw invalid(
-        'The result is not a valid game',
-        structure.map((e) => ({ ...e, path: requestPath(body, e.path) })),
-      );
-    }
-
-    const ids = players.map((p) => p.membershipId.toLowerCase());
-    if (!ids.includes(actor.id)) {
-      throw new ApiError(403, 'FORBIDDEN', 'You can only record a game you played in');
-    }
-
-    const playedAt = new Date(body.playedAt);
-    if (playedAt.getTime() > now.getTime()) {
-      throw invalid('A game cannot be played in the future', [
-        { path: ['playedAt'], message: 'Choose a time that has already passed' },
-      ]);
-    }
-
-    // FOR SHARE holds each player's membership as approved until this commits, so a
-    // concurrent removal waits for the game and then sees it.
-    const approved = await tx
-      .select({ id: memberships.id })
-      .from(memberships)
-      .where(
-        and(
-          eq(memberships.leagueId, actor.leagueId),
-          inArray(memberships.id, ids),
-          eq(memberships.status, 'approved'),
-        ),
-      )
-      .for('share');
-    const approvedIds = new Set(approved.map((m) => m.id));
-    const strangers = ids.flatMap((id, i) =>
-      approvedIds.has(id)
-        ? []
-        : [
-            {
-              path: requestPath(body, ['players', i, 'membershipId']),
-              message: 'Not an approved member of this league',
-            },
-          ],
-    );
-    if (strangers.length > 0) {
-      throw invalid('Every player must be an approved member of this league', strangers);
-    }
-
-    const ruleViolations = checkRules(rules, result);
-    if (ruleViolations.length > 0 && !body.requestOverride) {
-      throw new ApiError(
-        422,
-        'RULES_VIOLATION',
-        'The result breaks the league rules. A commissioner can review it.',
-        ruleViolations,
-      );
-    }
+    const result = await checkResult(tx, actor, rules, body, now);
 
     // A concurrent submission of the same key makes this insert wait for it to commit, then
     // insert nothing; that submission's game is then the replay.
@@ -201,43 +310,59 @@ export async function submitGame(
       return { game: raced, created: false };
     }
 
-    const [revision] = await tx
-      .insert(gameRevisions)
-      .values({
-        gameId: game.id,
-        number: 1,
-        status: 'open',
-        createdBy: actor.id,
-        playedAt,
-        winner: body.winner,
-        ruleViolations,
-        overrideStatus: ruleViolations.length > 0 ? 'requested' : null,
-        createdAt: now,
-      })
-      .returning({ id: gameRevisions.id });
-    if (!revision) throw new Error('insert returned no revision');
-
-    // An exhibition game has no teams, so nobody in it is a sub.
-    await tx.insert(revisionPlayers).values(
-      players.map((p, i) => ({
-        revisionId: revision.id,
-        side: p.side,
-        membershipId: ids[i]!,
-        isSub: false,
-        points: p.points,
-        sinks: p.sinks,
-      })),
-    );
-    // Submitting counts as the submitter's confirmation.
-    await tx.insert(confirmations).values({
-      revisionId: revision.id,
-      membershipId: actor.id,
-      kind: 'player',
-      createdAt: now,
-    });
-    await tx.update(games).set({ openRevisionId: revision.id }).where(eq(games.id, game.id));
-
+    await openRevision(tx, actor, game.id, 1, result, now);
     return { game: await loadGame(tx, game.id), created: true };
+  });
+}
+
+// A player of the game's open revision replaces it with a corrected result for the same four
+// players (SPEC §3.5). The correction is checked against the game's rules snapshot,
+// supersedes its base, and starts with only the author's confirmation, so the other players
+// confirm again. The window keeps running from first submission. A confirmed game can't be
+// corrected yet: reopening one arrives in a later slice.
+export async function correctGame(
+  deps: Deps,
+  actor: Actor,
+  gameId: string,
+  body: CorrectGameBody,
+): Promise<Game> {
+  const now = deps.clock.now();
+  // Ids are matched case-insensitively; Postgres returns them in lower case.
+  const baseId = body.baseRevisionId.toLowerCase();
+
+  return deps.db.transaction(async (tx) => {
+    const game = await lockGame(tx, actor, gameId, now);
+    const [base] = await tx
+      .select({ status: gameRevisions.status })
+      .from(gameRevisions)
+      .where(and(eq(gameRevisions.id, baseId), eq(gameRevisions.gameId, game.id)));
+    if (!base) throw staleRevision('corrected');
+
+    const seats = await tx
+      .select({ membershipId: revisionPlayers.membershipId })
+      .from(revisionPlayers)
+      .where(eq(revisionPlayers.revisionId, baseId));
+    const roster = new Set(seats.map((s) => s.membershipId));
+    if (!roster.has(actor.id)) {
+      throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can correct it');
+    }
+    if (base.status === 'expired') throw windowClosed('correct');
+    if (game.openRevisionId !== baseId) throw staleRevision('corrected');
+
+    const rules = LeagueRules.parse(game.rulesSnapshot);
+    const result = await checkResult(tx, actor, rules, body, now, roster);
+    const [latest] = await tx
+      .select({ number: max(gameRevisions.number) })
+      .from(gameRevisions)
+      .where(eq(gameRevisions.gameId, game.id));
+    if (!latest?.number) throw new Error('game has no revisions');
+
+    await tx
+      .update(gameRevisions)
+      .set({ status: 'superseded' })
+      .where(eq(gameRevisions.id, baseId));
+    await openRevision(tx, actor, game.id, latest.number + 1, result, now);
+    return loadGame(tx, game.id);
   });
 }
 
@@ -407,15 +532,9 @@ export async function confirmRevision(
     if (!seat) throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can confirm it');
     if (seat.confirmation !== null) return loadGame(tx, game.id);
 
-    if (revision.status === 'expired') {
-      throw new ApiError(409, 'WINDOW_CLOSED', 'The window to confirm this game has closed');
-    }
+    if (revision.status === 'expired') throw windowClosed('confirm');
     if (revision.status !== 'open' || game.openRevisionId !== rid) {
-      throw new ApiError(
-        409,
-        'STALE_REVISION',
-        'This version of the game can no longer be confirmed',
-      );
+      throw staleRevision('confirmed');
     }
 
     await tx.insert(confirmations).values({

@@ -6,7 +6,7 @@ import {
   type MyMembership,
 } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Redirect, Stack } from 'expo-router';
+import { Redirect, Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
@@ -112,6 +112,7 @@ type PendingGameProps = {
 };
 
 function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }: PendingGameProps) {
+  const router = useRouter();
   // Sends the id of the revision rendered below, so a correction made meanwhile is refused
   // rather than confirmed unseen.
   const confirm = useMutation({
@@ -121,10 +122,17 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
       if (isRefusal(error)) onRefused(error);
     },
   });
+  const author = revision.players.find((p) => p.membershipId === revision.createdBy);
 
   return (
     <View style={styles.game} testID="inbox-game">
       <Text style={styles.muted}>Played {new Date(revision.playedAt).toLocaleString()}</Text>
+      {revision.number > 1 && (
+        <Text testID="inbox-corrected" style={styles.muted}>
+          Corrected by {author?.displayName ?? 'another player'}, so earlier confirmations were
+          reset.
+        </Text>
+      )}
       {(['A', 'B'] as const).map((side) => (
         <View key={side} style={styles.side} testID={`inbox-side-${side}`}>
           <Text style={styles.heading}>
@@ -160,6 +168,13 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
         label={confirm.isPending ? 'Confirming…' : 'Confirm these numbers'}
         disabled={confirm.isPending}
         onPress={() => confirm.mutate()}
+      />
+      <Button
+        testID="propose-correction"
+        label="Propose a correction"
+        variant="secondary"
+        disabled={confirm.isPending}
+        onPress={() => router.push({ pathname: '/record-game', params: { correct: game.id } })}
       />
       {confirm.isError && !isRefusal(confirm.error) && (
         <Text testID="confirm-error" style={styles.error}>
