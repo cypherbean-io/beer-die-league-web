@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  type CorrectGameBody,
   CreateInviteResponse,
   ErrorBody,
   type Game,
@@ -184,6 +185,31 @@ async function confirmed(t: League, as: Caller, g: Game): Promise<Game> {
   return GameResponse.parse(await res.json()).game;
 }
 
+// A correction of the open revision shown in `g`: the default game with Di's 4 points fixed
+// to 3, so Ana and Bo beat Cy and Di 11–8.
+function correction(t: Table, g: Game, patch: Partial<CorrectGameBody> = {}): CorrectGameBody {
+  return {
+    baseRevisionId: g.openRevision!.id,
+    playedAt: '2026-10-18T11:30:00.000Z',
+    sides: {
+      A: { players: [line(t.ana, 6), line(t.bo, 5)] },
+      B: { players: [line(t.cy, 5), line(t.di, 3)] },
+    },
+    winner: 'A',
+    ...patch,
+  };
+}
+
+function correct(t: League, as: Caller, gameId: string, body: unknown): Promise<Response> {
+  return call('POST', `/api/leagues/${t.leagueId}/games/${gameId}/revisions`, { as, body });
+}
+
+async function corrected(t: League, as: Caller, gameId: string, body: unknown): Promise<Game> {
+  const res = await correct(t, as, gameId, body);
+  expect(res.status).toBe(201);
+  return GameResponse.parse(await res.json()).game;
+}
+
 async function inbox(t: League, as: Caller): Promise<Game[]> {
   const res = await call('GET', `/api/leagues/${t.leagueId}/inbox`, { as });
   expect(res.status).toBe(200);
@@ -217,7 +243,10 @@ const confirmationsOf = (g: Game) =>
 
 // Holds the game's row lock until `n` requests are queued behind it, so they run back to
 // back against the same state.
-async function raceOn(gameId: string, requests: () => Array<Promise<Response>>) {
+async function queuedOn(
+  gameId: string,
+  requests: () => Array<Promise<Response>>,
+): Promise<Response[]> {
   let racing: Promise<Response[]> | undefined;
   await api.db.transaction(async (tx) => {
     await tx.execute(sql`select 1 from games where id = ${gameId} for update`);
@@ -225,7 +254,12 @@ async function raceOn(gameId: string, requests: () => Array<Promise<Response>>) 
     racing = Promise.all(started);
     await waitForLockWaiters(api.db, started.length);
   });
-  const responses = await racing!;
+  return racing!;
+}
+
+// queuedOn for requests that all succeed with a game.
+async function raceOn(gameId: string, requests: () => Array<Promise<Response>>) {
+  const responses = await queuedOn(gameId, requests);
   return Promise.all(
     responses.map(async (r) => ({
       status: r.status,
@@ -1130,5 +1164,494 @@ describe('the inbox', () => {
 
     expect(await inbox(x, x.bo.caller)).toEqual([inX]);
     expect(await inbox(y, y.bo.caller)).toEqual([inY]);
+  });
+});
+
+// Ana and Bo beat Cy and Di 11–10 in a correction, one point short of the default win-by.
+const correctedMarginTooSmall = (t: Table): Partial<CorrectGameBody> => ({
+  sides: {
+    A: { players: [line(t.ana, 6), line(t.bo, 5)] },
+    B: { players: [line(t.cy, 5), line(t.di, 5)] },
+  },
+});
+
+async function pointsCounted(membershipId: string): Promise<number[]> {
+  const counted = await api.db.execute<{ points: number }>(
+    sql`select points from counted_results where membership_id = ${membershipId}`,
+  );
+  return counted.map((r) => r.points);
+}
+
+describe('correcting a game', () => {
+  it('replaces the open revision with the corrected result as revision 2', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(fixed).toMatchObject({ id: g.id, status: 'pending', confirmedRevision: null });
+    expect(fixed.openRevision).toEqual({
+      id: expect.any(String),
+      number: 2,
+      status: 'open',
+      createdBy: t.di.membershipId,
+      playedAt: '2026-10-18T11:30:00.000Z',
+      winner: 'A',
+      ruleViolations: [],
+      overrideStatus: null,
+      players: [
+        expect.objectContaining({ membershipId: t.ana.membershipId, side: 'A', points: 6 }),
+        expect.objectContaining({ membershipId: t.bo.membershipId, side: 'A', points: 5 }),
+        expect.objectContaining({ membershipId: t.cy.membershipId, side: 'B', points: 5 }),
+        expect.objectContaining({ membershipId: t.di.membershipId, side: 'B', points: 3 }),
+      ],
+    });
+    expect(fixed.openRevision!.id).not.toBe(g.openRevision!.id);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('superseded');
+  });
+
+  it("resets the earlier confirmations, keeping only the author's", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(confirmationsOf(fixed)).toEqual([null, null, null, 'player']);
+    // The three confirmations of revision 1 stay with it, as history.
+    expect(await rows('confirmations')).toBe(4);
+  });
+
+  it('keeps the confirmation window where the first submission set it', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(3 * DAY);
+
+    const fixed = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(fixed.windowExpiresAt).toBe('2026-10-25T12:00:00.000Z');
+    expect(fixed.windowExpiresAt).toBe(g.windowExpiresAt);
+  });
+
+  it('counts the corrected numbers, not the original ones, once all four confirm the correction', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+    await confirmed(t, t.ana.caller, fixed);
+    await confirmed(t, t.bo.caller, fixed);
+
+    const final = await confirmed(t, t.cy.caller, fixed);
+
+    expect(final.status).toBe('confirmed');
+    expect(await countedRevision(g.id)).toBe(fixed.openRevision!.id);
+    expect(await pointsCounted(t.di.membershipId)).toEqual([3]);
+  });
+
+  it('refuses a confirmation of the superseded revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    const res = await confirm(t, t.bo.caller, g.id, g.openRevision!.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('confirmations')).toBe(2);
+  });
+
+  it('puts the game back in the inbox of a player whose confirmation it reset', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(await inbox(t, t.bo.caller)).toEqual([fixed]);
+    expect(await inbox(t, t.di.caller)).toEqual([]);
+  });
+
+  it('numbers a correction of a correction after it, superseding it in turn', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const second = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    const third = await corrected(t, t.bo.caller, g.id, correction(t, second));
+
+    expect(third.openRevision).toMatchObject({ number: 3, createdBy: t.bo.membershipId });
+    expect(await revisionStatus(second.openRevision!.id)).toBe('superseded');
+  });
+
+  it('lets a correction move the same four players between sides', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const fixed = await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, {
+        sides: {
+          A: { players: [line(t.ana, 6), line(t.cy, 5)] },
+          B: { players: [line(t.bo, 5), line(t.di, 3)] },
+        },
+      }),
+    );
+
+    expect(fixed.openRevision!.players.map((p) => [p.membershipId, p.side])).toEqual([
+      [t.ana.membershipId, 'A'],
+      [t.cy.membershipId, 'A'],
+      [t.bo.membershipId, 'B'],
+      [t.di.membershipId, 'B'],
+    ]);
+  });
+
+  it('accepts the game and base revision ids in upper case', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const fixed = await corrected(
+      t,
+      t.di.caller,
+      g.id.toUpperCase(),
+      correction(t, g, { baseRevisionId: g.openRevision!.id.toUpperCase() }),
+    );
+
+    expect(fixed.openRevision!.number).toBe(2);
+  });
+
+  it.each([
+    ['an unknown game id', randomUUID()],
+    ['a malformed game id', 'not-a-uuid'],
+  ])('gives 404 for %s', async (_label, gameId) => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await correct(t, t.di.caller, gameId, correction(t, g));
+
+    expect(res.status).toBe(404);
+    expect(await rows('game_revisions')).toBe(1);
+  });
+});
+
+describe('who may correct a game', () => {
+  it('refuses a member who did not play with 403, even a commissioner', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const sides = {
+      A: { players: [line(ed, 6), line(t.bo, 5)] },
+      B: { players: [line(t.cy, 5), line(t.di, 3)] },
+    };
+    const g = await submitted(
+      t,
+      t.bo.caller,
+      game(t, { sides: { ...sides, B: { players: [line(t.cy, 5), line(t.di, 4)] } } }),
+    );
+
+    const res = await correct(t, t.ana.caller, g.id, correction(t, g, { sides }));
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('open');
+  });
+
+  it('refuses a correction that leaves its author out of the game with 403', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await correct(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, {
+        sides: {
+          A: { players: [line(t.ana, 6), line(t.bo, 5)] },
+          B: { players: [line(t.cy, 5), line(ed, 3)] },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await rows('game_revisions')).toBe(1);
+  });
+});
+
+describe('stale and closed corrections', () => {
+  it('refuses a correction of a revision that was already corrected with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    const res = await correct(t, t.cy.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
+    expect(await revisionStatus(fixed.openRevision!.id)).toBe('open');
+  });
+
+  it.each<[string, (other: Game) => string]>([
+    ['an unknown revision', () => randomUUID()],
+    ['the open revision of another game', (other) => other.openRevision!.id],
+  ])('refuses a base that is %s with 409 STALE_REVISION', async (_label, baseOf) => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const other = await submitted(t, t.ana.caller, game(t));
+
+    const res = await correct(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { baseRevisionId: baseOf(other) }),
+    );
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
+    expect(await revisionStatus(other.openRevision!.id)).toBe('open');
+  });
+
+  it('accepts a correction 1 s before the window closes', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY - SECOND);
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(fixed.openRevision!.number).toBe(2);
+  });
+
+  it('refuses a correction with 409 WINDOW_CLOSED once the window has closed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    const res = await correct(t, t.di.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  // Reopening a confirmed game through a correction is a later slice (SPEC §3.5).
+  it('refuses a correction of a confirmed game with 409, leaving its counted revision in place', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    await confirmed(t, t.di.caller, g);
+
+    const res = await correct(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('confirmed');
+    expect(await rows('game_revisions')).toBe(1);
+  });
+});
+
+describe('validating a correction', () => {
+  it('checks a correction against the rules snapshot, not rules edited since', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    expect((await patchLeague(t, 'rules', { targetScore: 21 })).status).toBe(200);
+
+    // 11–8 is a legal end only under the snapshot's target of 11.
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(fixed.rulesSnapshot).toEqual(DEFAULT_RULES);
+    expect(fixed.openRevision!.ruleViolations).toEqual([]);
+  });
+
+  it('refuses a correction that breaks the snapshot, even when the edited rules allow it', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    expect((await patchLeague(t, 'rules', { winBy: 1 })).status).toBe(200);
+
+    const res = await correct(t, t.di.caller, g.id, correction(t, g, correctedMarginTooSmall(t)));
+
+    expect(res.status).toBe(422);
+    expect(await errorOf(res)).toEqual({
+      code: 'RULES_VIOLATION',
+      message: expect.any(String),
+      details: [{ code: 'MARGIN_TOO_SMALL', message: expect.any(String) }],
+    });
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('open');
+  });
+
+  it('stores a rule-breaking correction sent for commissioner review as awaiting an override', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const fixed = await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+
+    expect(fixed.openRevision).toMatchObject({
+      status: 'open',
+      overrideStatus: 'requested',
+      ruleViolations: [{ code: 'MARGIN_TOO_SMALL', message: expect.any(String) }],
+    });
+  });
+
+  it('drops the review request when a correction fixes the rule-breaking result', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(fixed.openRevision).toMatchObject({ ruleViolations: [], overrideStatus: null });
+  });
+
+  it("does not carry the base revision's approved override over to the correction", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+    // Commissioners decide overrides in slice 4; until then the approval is written directly.
+    await api.db.execute(
+      sql`update game_revisions set override_status = 'approved' where id = ${g.openRevision!.id}`,
+    );
+
+    const refused = await correct(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, correctedMarginTooSmall(t)),
+    );
+    const fixed = await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+
+    expect(refused.status).toBe(422);
+    expect((await errorOf(refused)).code).toBe('RULES_VIOLATION');
+    expect(fixed.openRevision!.overrideStatus).toBe('requested');
+  });
+
+  it('rejects a correction played in the future with 422 VALIDATION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await correct(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { playedAt: '2026-10-18T12:00:01.000Z' }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(await errorOf(res)).toMatchObject({
+      code: 'VALIDATION',
+      details: [{ path: ['playedAt'] }],
+    });
+    expect(await rows('game_revisions')).toBe(1);
+  });
+
+  // Otherwise a player could swap out the others, who could then neither see the game nor
+  // contest it, since only a revision's players may confirm or correct it.
+  it('refuses a correction that swaps in someone who did not play with 422 VALIDATION, naming the entry', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+
+    const res = await correct(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, {
+        sides: {
+          A: { players: [line(t.ana, 6), line(ed, 5)] },
+          B: { players: [line(t.cy, 5), line(t.di, 3)] },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(await errorOf(res)).toMatchObject({
+      code: 'VALIDATION',
+      details: [{ code: 'NOT_IN_GAME', path: ['sides', 'A', 'players', 1, 'membershipId'] }],
+    });
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('open');
+  });
+
+  it.each<[string, (t: Table, g: Game) => unknown]>([
+    [
+      'a player listed twice',
+      (t, g) =>
+        correction(t, g, {
+          sides: {
+            A: { players: [line(t.ana, 6), line(t.bo, 5)] },
+            B: { players: [line(t.cy, 5), line(t.bo, 3)] },
+          },
+        }),
+    ],
+    ['a missing base revision', (t, g) => ({ ...correction(t, g), baseRevisionId: undefined })],
+    [
+      'a kind, which a correction cannot change',
+      (t, g) => ({ ...correction(t, g), kind: 'season' }),
+    ],
+    ['an unknown key', (t, g) => ({ ...correction(t, g), leagueId: randomUUID() })],
+  ])('rejects %s with 422 VALIDATION', async (_label, make) => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await correct(t, t.di.caller, g.id, make(t, g));
+
+    expect(res.status).toBe(422);
+    expect((await errorOf(res)).code).toBe('VALIDATION');
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('open');
+  });
+});
+
+describe('concurrent corrections', () => {
+  it('accepts exactly one of two corrections racing on the same revision', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const responses = await queuedOn(g.id, () => [
+      correct(t, t.bo.caller, g.id, correction(t, g)),
+      correct(t, t.di.caller, g.id, correction(t, g)),
+    ]);
+
+    expect(responses.map((r) => r.status).toSorted()).toEqual([201, 409]);
+    const loser = responses.find((r) => r.status === 409)!;
+    expect((await errorOf(loser)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
+    expect(await rows('confirmations')).toBe(2);
+  });
+
+  it('lets either the final confirmation or a correction win a race, never both', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const rid = g.openRevision!.id;
+
+    const responses = await queuedOn(g.id, () => [
+      confirm(t, t.di.caller, g.id, rid),
+      correct(t, t.bo.caller, g.id, correction(t, g)),
+    ]);
+
+    const won = responses.filter((r) => r.ok);
+    const lost = responses.filter((r) => !r.ok);
+    expect(won).toHaveLength(1);
+    expect(lost.map((r) => r.status)).toEqual([409]);
+    // Whichever ran first, the stored game is the one it answered with.
+    const winner = GameResponse.parse(await won[0]!.json()).game;
+    expect(await countedRevision(g.id)).toBe(winner.confirmedRevision?.id ?? null);
+    expect(await rows('game_revisions')).toBe(winner.openRevision ? 2 : 1);
   });
 });

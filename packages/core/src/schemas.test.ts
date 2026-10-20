@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AuditQuery,
+  CorrectGameBody,
   DisplayName,
   nameKey,
   PartnershipStatsQuery,
@@ -283,6 +284,58 @@ describe('SubmitGameBody', () => {
     ['an unknown key', { ...valid, seasonId: ids[0] }],
   ])('rejects %s', (_label, body) => {
     expect(SubmitGameBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('CorrectGameBody', () => {
+  const ids = [
+    '0199f3a2-5c1e-7a00-8000-00000000000a',
+    '0199f3a2-5c1e-7a00-8000-00000000000b',
+    '0199f3a2-5c1e-7a00-8000-00000000000c',
+    '0199f3a2-5c1e-7a00-8000-00000000000d',
+  ] as const;
+  const line = (membershipId: string, points: number, sinks = 0) => ({
+    membershipId,
+    points,
+    sinks,
+  });
+  const valid = {
+    baseRevisionId: '0199f3a2-5c1e-7a00-8000-0000000000ee',
+    playedAt: '2026-10-18T11:30:00.000Z',
+    sides: {
+      A: { players: [line(ids[0], 6), line(ids[1], 5)] },
+      B: { players: [line(ids[2], 5), line(ids[3], 3)] },
+    },
+    winner: 'A',
+  };
+  const withLine = (patch: object) => ({
+    ...valid,
+    sides: { ...valid.sides, A: { players: [{ ...line(ids[0], 6), ...patch }, line(ids[1], 5)] } },
+  });
+
+  it('accepts a full corrected result based on a revision', () => {
+    expect(CorrectGameBody.safeParse(valid).success).toBe(true);
+  });
+
+  it('accepts a request for commissioner review', () => {
+    expect(CorrectGameBody.safeParse({ ...valid, requestOverride: true }).success).toBe(true);
+  });
+
+  it.each([
+    ['a missing base revision', { ...valid, baseRevisionId: undefined }],
+    ['a base revision that is not a UUID', { ...valid, baseRevisionId: 'rev-1' }],
+    // A correction keeps the game's kind; only a first submission chooses it.
+    ['a kind', { ...valid, kind: 'exhibition' }],
+    // Retries of a correction are told apart by their base revision, not by a key.
+    ['an idempotency key', { ...valid, idempotencyKey: '0199f3a2-5c1e-7a00-8000-0000000000ff' }],
+    ['a missing winner', { ...valid, winner: undefined }],
+    ['a time before 2000', { ...valid, playedAt: '1999-12-31T23:59:59.999Z' }],
+    ['a missing side', { ...valid, sides: { A: valid.sides.A } }],
+    ['100 points', withLine({ points: 100 })],
+    ['a client-derived sub flag', withLine({ isSub: false })],
+    ['an unknown key', { ...valid, gameId: ids[0] }],
+  ])('rejects %s', (_label, body) => {
+    expect(CorrectGameBody.safeParse(body).success).toBe(false);
   });
 });
 
