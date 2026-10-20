@@ -4,6 +4,7 @@ import { Redirect, Stack } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { getAudit } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
+import { describeOrder } from '../src/standings';
 import { Button } from '../src/ui';
 
 const RULE_LABELS: Record<keyof Rules, string> = {
@@ -49,6 +50,24 @@ function describeEvent(event: AuditEvent): { summary: string; lines: string[] } 
             : 'rejected a game that breaks the league rules',
         lines: [],
       };
+    case 'season.started':
+      return { summary: `started ${event.season.name}`, lines: [] };
+    case 'season.ended':
+      return { summary: `ended ${event.season.name}`, lines: [] };
+    case 'season.standings_config_updated': {
+      const { before, after } = event.details;
+      return {
+        summary: `changed the standings settings for ${event.season.name}`,
+        lines: [
+          ...(describeOrder(before.order) === describeOrder(after.order)
+            ? []
+            : [`Ranked by: ${describeOrder(before.order)} → ${describeOrder(after.order)}`]),
+          ...(before.minGames === after.minGames
+            ? []
+            : [`Minimum games: ${before.minGames} → ${after.minGames}`]),
+        ],
+      };
+    }
   }
 }
 

@@ -1,5 +1,6 @@
-// Periodic sweep: drains the email outbox and materializes game expiry. Season finalization
-// and purges join it in later slices. Correctness never depends on this process running.
+// Periodic sweep: drains the email outbox and materializes game expiry, which also finalizes
+// an ended season once its last open game expires. Purges join it in a later slice.
+// Correctness never depends on this process running.
 import { systemClock } from './clock.ts';
 import { loadConfig } from './config.ts';
 import { createDb } from './db/client.ts';

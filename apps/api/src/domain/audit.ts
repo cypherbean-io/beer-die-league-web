@@ -6,7 +6,7 @@ import {
 } from '@beer-die/core';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { Db, Tx } from '../db/client.ts';
-import { auditEvents, memberships } from '../db/schema.ts';
+import { auditEvents, memberships, seasons } from '../db/schema.ts';
 import type { Actor } from './membership.ts';
 
 const DEFAULT_PAGE = 50;
@@ -89,6 +89,18 @@ export async function listAudit(
             ),
           );
   const playerById = new Map(players.map((p) => [p.membershipId, p]));
+  // Likewise an entry about a season names it as it is now.
+  const seasonIds = [
+    ...new Set(page.flatMap((row) => (row.targetType === 'season' ? [row.targetId] : []))),
+  ];
+  const seasonRows =
+    seasonIds.length === 0
+      ? []
+      : await db
+          .select({ id: seasons.id, name: seasons.name })
+          .from(seasons)
+          .where(and(eq(seasons.leagueId, actor.leagueId), inArray(seasons.id, seasonIds)));
+  const seasonById = new Map(seasonRows.map((s) => [s.id, s]));
 
   // Parsed rather than cast: a row whose stored shape has drifted fails here, loudly,
   // instead of reaching clients.
@@ -99,6 +111,7 @@ export async function listAudit(
       createdAt: createdAt.toISOString(),
       actor: { membershipId: actorMembershipId, displayName: actorDisplayName },
       ...(playerId !== undefined && { player: playerById.get(playerId) }),
+      ...(row.targetType === 'season' && { season: seasonById.get(row.targetId) }),
     });
   });
   return { events, nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null };

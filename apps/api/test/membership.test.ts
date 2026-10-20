@@ -9,6 +9,7 @@ import {
   MembersResponse,
   MemberResponse,
   MeResponse,
+  SeasonResponse,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
@@ -626,7 +627,7 @@ describe('roles', () => {
 
 // Every league route, with the ids it needs. The first test checks this table against the
 // app's registered routes, so a new league route can't skip the tenancy checks below.
-type Ids = { leagueId: string; mid: string; iid: string; gid: string; rid: string };
+type Ids = { leagueId: string; mid: string; iid: string; gid: string; rid: string; sid: string };
 type Route = {
   method: string;
   path: string;
@@ -742,6 +743,32 @@ const LEAGUE_ROUTES: Route[] = [
     body: { decision: 'approve' },
   },
   { method: 'GET', path: '/api/leagues/:leagueId/inbox', commissioner: false },
+  { method: 'GET', path: '/api/leagues/:leagueId/seasons', commissioner: false },
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/seasons',
+    commissioner: true,
+    body: { name: 'Fall 2026' },
+  },
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/seasons/:sid/start',
+    commissioner: true,
+    body: {},
+  },
+  // Y's commissioner gets 409 for the draft season; X's gets 404.
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/seasons/:sid/end',
+    commissioner: true,
+    body: {},
+  },
+  {
+    method: 'PATCH',
+    path: '/api/leagues/:leagueId/seasons/:sid/standings-config',
+    commissioner: true,
+    body: { minGames: 2 },
+  },
   {
     method: 'GET',
     path: '/api/leagues/:leagueId/stats/players',
@@ -763,7 +790,7 @@ const LEAGUE_ROUTES: Route[] = [
 ];
 
 function fill(path: string, ids: Ids): string {
-  return path.replace(/:(leagueId|mid|iid|gid|rid)/g, (_m, key: keyof Ids) => ids[key]);
+  return path.replace(/:(leagueId|mid|iid|gid|rid|sid)/g, (_m, key: keyof Ids) => ids[key]);
 }
 
 function callRoute(route: Route, ids: Ids, as: Caller): Promise<Response> {
@@ -797,11 +824,23 @@ async function openGame(l: League): Promise<{ gid: string; rid: string }> {
 }
 
 const NEEDS_GAME = /:(gid|rid)\b/;
+const NEEDS_SEASON = /:sid\b/;
 // A pending member has no stats profile, so these routes need Pat approved.
 const NEEDS_APPROVED_MEMBER = /\/stats\/players\/:mid\b/;
 
+// A draft season in `l`, created by its commissioner.
+async function draftSeason(l: League): Promise<string> {
+  const res = await call('POST', `/api/leagues/${l.leagueId}/seasons`, {
+    as: l.commissioner,
+    body: { name: 'Fall 2026' },
+  });
+  expect(res.status).toBe(201);
+  return SeasonResponse.parse(await res.json()).season.id;
+}
+
 // League Y with a pending member, an active invite, and, for a route that needs one, an open
-// game, so every route has a real target. A route without a game id gets unused placeholders.
+// game or a draft season, so every route has a real target. A route without a game or season
+// id gets unused placeholders.
 async function leagueWithTargets(route: Route): Promise<{ y: League; ids: Ids }> {
   const y = await league('Garage League', 'yan@example.com', 'Yan');
   const { id: iid, token } = await invite(y);
@@ -816,7 +855,8 @@ async function leagueWithTargets(route: Route): Promise<{ y: League; ids: Ids }>
   const game = NEEDS_GAME.test(route.path)
     ? await openGame(y)
     : { gid: randomUUID(), rid: randomUUID() };
-  return { y, ids: { leagueId: y.leagueId, mid, iid, ...game } };
+  const sid = NEEDS_SEASON.test(route.path) ? await draftSeason(y) : randomUUID();
+  return { y, ids: { leagueId: y.leagueId, mid, iid, sid, ...game } };
 }
 
 describe('tenancy', () => {
@@ -851,11 +891,11 @@ describe('tenancy', () => {
   );
 
   it.each(
-    LEAGUE_ROUTES.filter((r) => /:(mid|iid|gid|rid)\b/.test(r.path)).map(
+    LEAGUE_ROUTES.filter((r) => /:(mid|iid|gid|rid|sid)\b/.test(r.path)).map(
       (r) => [`${r.method} ${r.path}`, r] as const,
     ),
   )(
-    "gives X's commissioner 404 for Y's member, invite, or game named under X's own path: %s",
+    "gives X's commissioner 404 for Y's member, invite, game, or season named under X's own path: %s",
     async (_label, route) => {
       const x = await league('Basement League', 'ana@example.com', 'Ana');
       const { ids } = await leagueWithTargets(route);

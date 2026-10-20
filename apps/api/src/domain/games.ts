@@ -38,7 +38,9 @@ import {
   overrideRequestedParams,
 } from '../mail/templates.ts';
 import { recordAudit } from './audit.ts';
+import { expireLapsed } from './expiry.ts';
 import { type Actor, assertCommissioner } from './membership.ts';
+import { settleSeason } from './seasons.ts';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -535,28 +537,11 @@ async function recheckCommissioner(tx: Tx, actor: Actor): Promise<void> {
   assertCommissioner({ ...actor, role: self?.role ?? 'member' });
 }
 
-// Materializes a lapsed window: the open revision expires, and so does a game that never
-// counted; one that did keeps its confirmed revision. Reads don't wait for this, because
-// they treat `now ≥ window_expires_at` as expired. Runs under the game row lock.
+// Materializes a lapsed window (expireLapsed) under the game row lock, before a write does
+// anything else. A season game's ended season then finalizes if nothing else in it is open.
 async function settleExpired(tx: Tx, game: GameRow, now: Date): Promise<GameRow> {
-  const { openRevisionId, windowExpiresAt } = game;
-  if (!openRevisionId || !windowExpiresAt || now.getTime() < windowExpiresAt.getTime()) {
-    return game;
-  }
-  await tx
-    .update(gameRevisions)
-    .set({ status: 'expired' })
-    .where(and(eq(gameRevisions.id, openRevisionId), eq(gameRevisions.status, 'open')));
-  const [settled] = await tx
-    .update(games)
-    .set({
-      status: game.confirmedRevisionId === null ? 'expired' : game.status,
-      openRevisionId: null,
-      windowExpiresAt: null,
-    })
-    .where(eq(games.id, game.id))
-    .returning();
-  if (!settled) throw new Error('locked game is missing');
+  const settled = await expireLapsed(tx, game, now);
+  if (settled !== game && settled.seasonId) await settleSeason(tx, settled.seasonId, now);
   return settled;
 }
 
@@ -608,8 +593,9 @@ export async function sweepExpired(
 // game's open revision confirms once each of its four players has a confirmation and, if it
 // breaks the rules, a commissioner has approved an override; it then becomes the revision
 // stats read, superseding the one a reopened game counted until now. `confirmed_at` records
-// only the first time the game counts. Call it under the game row lock after any change that
-// could complete the open revision. Until then it changes nothing.
+// only the first time the game counts. A season game's ended season then finalizes if nothing
+// else in it is open. Call it under the game row lock after any change that could complete the
+// open revision. Until then it changes nothing.
 async function settleRevision(tx: Tx, game: GameRow, now: Date): Promise<void> {
   const revisionId = game.openRevisionId;
   if (!revisionId) return;
@@ -657,6 +643,7 @@ async function settleRevision(tx: Tx, game: GameRow, now: Date): Promise<void> {
       windowExpiresAt: null,
     })
     .where(eq(games.id, game.id));
+  if (game.seasonId) await settleSeason(tx, game.seasonId, now);
 }
 
 // A player confirms the revision they were shown. If they have already confirmed it (or

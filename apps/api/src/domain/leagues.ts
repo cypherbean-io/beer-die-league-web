@@ -93,8 +93,8 @@ export async function getLeague(db: Db, leagueId: string): Promise<League> {
 // Locks the league row, the lock setRole also takes, then re-reads the actor's role under
 // it. So a commissioner demoted while the request waited can't edit, and concurrent edits
 // each read the values the previous one wrote, which keeps every audit entry's "before"
-// accurate.
-async function lockForCommissionerEdit(tx: Tx, actor: Actor): Promise<LeagueRow> {
+// accurate. Season edits (domain/seasons.ts) take it too, which serializes season starts.
+export async function lockForCommissionerEdit(tx: Tx, actor: Actor): Promise<LeagueRow> {
   const [row] = await tx.select().from(leagues).where(eq(leagues.id, actor.leagueId)).for('update');
   if (!row) throw missingLeague();
   const [self] = await tx
