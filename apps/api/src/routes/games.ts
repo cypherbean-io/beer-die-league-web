@@ -1,8 +1,14 @@
-import { CorrectGameBody, EmptyBody, type GameResponse, SubmitGameBody } from '@beer-die/core';
+import {
+  CorrectGameBody,
+  EmptyBody,
+  ForceConfirmBody,
+  type GameResponse,
+  SubmitGameBody,
+} from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
 import type { LeagueEnv } from '../auth/middleware.ts';
-import { confirmRevision, correctGame, submitGame } from '../domain/games.ts';
+import { confirmRevision, correctGame, forceConfirm, submitGame } from '../domain/games.ts';
 import { idParam, readJson } from '../http.ts';
 
 // Mounted inside leagueRoutes, which has already resolved the caller's membership.
@@ -31,6 +37,18 @@ export function gameRoutes(deps: AppDeps) {
           c.get('membership')!,
           idParam(c, 'gid'),
           idParam(c, 'rid'),
+        );
+        return c.json({ game } satisfies GameResponse);
+      })
+      // A commissioner confirms for silent players, again on the revision they displayed.
+      .post('/games/:gid/revisions/:rid/force-confirm', async (c) => {
+        const body = await readJson(c, ForceConfirmBody);
+        const game = await forceConfirm(
+          deps,
+          c.get('membership')!,
+          idParam(c, 'gid'),
+          idParam(c, 'rid'),
+          body,
         );
         return c.json({ game } satisfies GameResponse);
       })

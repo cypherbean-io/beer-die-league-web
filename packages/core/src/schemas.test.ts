@@ -3,6 +3,7 @@ import {
   AuditQuery,
   CorrectGameBody,
   DisplayName,
+  ForceConfirmBody,
   nameKey,
   PartnershipStatsQuery,
   playerLines,
@@ -336,6 +337,34 @@ describe('CorrectGameBody', () => {
     ['an unknown key', { ...valid, gameId: ids[0] }],
   ])('rejects %s', (_label, body) => {
     expect(CorrectGameBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('ForceConfirmBody', () => {
+  const ids = [
+    '0199f3a2-5c1e-7a00-8000-00000000000a',
+    '0199f3a2-5c1e-7a00-8000-00000000000b',
+    '0199f3a2-5c1e-7a00-8000-00000000000c',
+    '0199f3a2-5c1e-7a00-8000-00000000000d',
+  ] as const;
+
+  it.each([
+    ['one player', [ids[0]]],
+    ['all four players', [...ids]],
+  ])('accepts %s', (_label, membershipIds) => {
+    expect(ForceConfirmBody.safeParse({ membershipIds }).success).toBe(true);
+  });
+
+  it.each([
+    ['no players', { membershipIds: [] }],
+    ['five players', { membershipIds: [...ids, '0199f3a2-5c1e-7a00-8000-00000000000e'] }],
+    ['a player listed twice', { membershipIds: [ids[0], ids[1], ids[0]] }],
+    ['a player listed twice in different case', { membershipIds: [ids[0], ids[0].toUpperCase()] }],
+    ['an id that is not a UUID', { membershipIds: ['cy'] }],
+    ['a missing list', {}],
+    ['an unknown key', { membershipIds: [ids[0]], kind: 'player' }],
+  ])('rejects %s', (_label, body) => {
+    expect(ForceConfirmBody.safeParse(body).success).toBe(false);
   });
 });
 

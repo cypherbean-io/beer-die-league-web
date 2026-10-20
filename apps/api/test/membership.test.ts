@@ -728,6 +728,12 @@ const LEAGUE_ROUTES: Route[] = [
     commissioner: false,
     body: {},
   },
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/games/:gid/revisions/:rid/force-confirm',
+    commissioner: true,
+    body: { membershipIds: [randomUUID()] },
+  },
   { method: 'GET', path: '/api/leagues/:leagueId/inbox', commissioner: false },
   {
     method: 'GET',

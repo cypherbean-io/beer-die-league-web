@@ -258,7 +258,9 @@ describe('rules', () => {
     const statuses = (await edits!).map((r) => r.status);
 
     expect(statuses).toEqual([200, 200]);
-    const [first, second] = (await auditLog(l)).events.toReversed().map((e) => e.details);
+    const [first, second] = (await auditLog(l)).events
+      .toReversed()
+      .map((e) => (e.action === 'league.rules_updated' ? e.details : null));
     expect(first!.before).toEqual(DEFAULT_RULES);
     expect(second!.before).toEqual(first!.after);
     expect((await getLeague(l)).rules).toEqual(second!.after);
