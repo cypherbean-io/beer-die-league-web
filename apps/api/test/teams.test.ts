@@ -149,9 +149,10 @@ async function seasonNow(l: League, seasonId: string): Promise<Season> {
 
 const line = (p: Player, points: number) => ({ membershipId: p.membershipId, points, sinks: 0 });
 
-// Season games can't be submitted until that piece of slice 5 lands, so, as in
-// seasons.test.ts, an exhibition game is filed under the season directly. Ana and Bo beat Cy
-// and Di 11–9; it stays open, awaiting Bo, Cy, and Di.
+// These tests need only an open game that keeps an ended season from finalizing, with every
+// player still free to form teams, so an exhibition game is filed under the season directly
+// rather than played between two of its teams; its revision names no teams, and nothing here
+// corrects or reads it. Ana and Bo beat Cy and Di 11–9; it stays open, awaiting Bo, Cy, and Di.
 async function openSeasonGame(t: Table, seasonId: string): Promise<Game> {
   const res = await call('POST', `/api/leagues/${t.leagueId}/games`, {
     as: t.ana.caller,

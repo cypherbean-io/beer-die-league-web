@@ -7,10 +7,12 @@ import {
   type Game,
   GameResponse,
   JoinResponse,
+  type ExhibitionGameBody,
   type Season,
   SeasonResponse,
   SeasonsResponse,
-  type SubmitGameBody,
+  type Team,
+  TeamResponse,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -41,6 +43,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   clock = new FixedClock(NOW);
+  teamsBySeason.clear();
   api = await startApi(database.url, { clock });
   call = client(api.baseUrl);
   await resetTables(api.db);
@@ -159,7 +162,7 @@ async function auditLog(l: League) {
 const line = (p: Player, points: number) => ({ membershipId: p.membershipId, points, sinks: 0 });
 
 // Ana and Bo beat Cy and Di 11–9, half an hour ago.
-function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
+function game(t: Table, patch: Partial<ExhibitionGameBody> = {}): ExhibitionGameBody {
   return {
     idempotencyKey: randomUUID(),
     kind: 'exhibition',
@@ -173,7 +176,7 @@ function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
   };
 }
 
-async function submitted(t: Table, body: SubmitGameBody = game(t)): Promise<Game> {
+async function submitted(t: Table, body: unknown = game(t)): Promise<Game> {
   const res = await call('POST', `/api/leagues/${t.leagueId}/games`, {
     as: t.ana.caller,
     body,
@@ -182,18 +185,52 @@ async function submitted(t: Table, body: SubmitGameBody = game(t)): Promise<Game
   return GameResponse.parse(await res.json()).game;
 }
 
-// Season games can't be submitted until teams land (SPEC §3.10, slice 5), so these tests file
-// an exhibition game under a season directly, as that slice's submissions will.
-async function toSeason(g: Game, seasonId: string): Promise<void> {
-  await api.db.execute(sql`update games set kind = 'season', season_id = ${seasonId}
-                           where id = ${g.id}`);
+async function approvedTeam(t: Table, a: Player, b: Player, seasonId: string, name: string) {
+  const proposed = await call('POST', `${seasonsPath(t)}/${seasonId}/teams`, {
+    as: a.caller,
+    body: { name, partnerId: b.membershipId },
+  });
+  expect(proposed.status).toBe(201);
+  const { team } = TeamResponse.parse(await proposed.json());
+  const teamPath = `/api/leagues/${t.leagueId}/teams/${team.id}`;
+  expect((await call('POST', `${teamPath}/accept`, { as: b.caller, body: {} })).status).toBe(200);
+  expect((await call('POST', `${teamPath}/approve`, { as: t.commissioner, body: {} })).status).toBe(
+    200,
+  );
+  return team;
 }
 
-// An open game of the season, submitted by Ana, so it awaits Bo, Cy, and Di.
-async function openSeasonGame(t: Table, seasonId: string, body?: SubmitGameBody): Promise<Game> {
-  const g = await submitted(t, body);
-  await toSeason(g, seasonId);
-  return g;
+// Each season's teams, formed the first time a test files a game in it: Ana and Bo are the
+// Sharks, Cy and Di the Jets.
+const teamsBySeason = new Map<string, { sharks: Team; jets: Team }>();
+
+async function teamsOf(t: Table, seasonId: string): Promise<{ sharks: Team; jets: Team }> {
+  let teams = teamsBySeason.get(seasonId);
+  if (!teams) {
+    teams = {
+      sharks: await approvedTeam(t, t.ana, t.bo, seasonId, 'Sharks'),
+      jets: await approvedTeam(t, t.cy, t.di, seasonId, 'Jets'),
+    };
+    teamsBySeason.set(seasonId, teams);
+  }
+  return teams;
+}
+
+// An open game of the active season, the Sharks against the Jets, submitted by Ana, so it
+// awaits Bo, Cy, and Di. It is played as the clock reads, so after the season started.
+async function openSeasonGame(
+  t: Table,
+  seasonId: string,
+  body: ExhibitionGameBody = game(t),
+): Promise<Game> {
+  const { sharks, jets } = await teamsOf(t, seasonId);
+  return submitted(t, {
+    ...body,
+    kind: 'season',
+    seasonId,
+    playedAt: clock.now().toISOString(),
+    sides: { A: { teamId: sharks.id, ...body.sides.A }, B: { teamId: jets.id, ...body.sides.B } },
+  });
 }
 
 function confirm(t: Table, as: Player, g: Game): Promise<Response> {
@@ -482,7 +519,13 @@ describe('ending a season', () => {
     const again = await ended(t, season.id);
 
     expect(again).toEqual(first);
-    expect((await auditLog(t)).map((e) => e.action)).toEqual(['season.ended', 'season.started']);
+    // The team approvals are the game's teams, formed after the season started.
+    expect((await auditLog(t)).map((e) => e.action)).toEqual([
+      'season.ended',
+      'team.approved',
+      'team.approved',
+      'season.started',
+    ]);
   });
 
   it('does not wait for an open exhibition game', async () => {
@@ -568,7 +611,7 @@ describe('finalizing an ended season', () => {
       as: t.bo.caller,
       body: {
         baseRevisionId: g.openRevision!.id,
-        playedAt: '2026-10-18T11:30:00.000Z',
+        playedAt: g.openRevision!.playedAt,
         sides: {
           A: { players: [line(t.ana, 6), line(t.bo, 5)] },
           B: { players: [line(t.cy, 5), line(t.di, 3)] },
@@ -859,7 +902,10 @@ describe('the season a game belongs to', () => {
     const theirs = await active(y);
     const g = await submitted(x);
 
-    await expect(toSeason(g, theirs.id)).rejects.toThrow();
+    await expect(
+      api.db.execute(sql`update games set kind = 'season', season_id = ${theirs.id}
+                         where id = ${g.id}`),
+    ).rejects.toThrow();
   });
 
   it('is required for a season game', async () => {

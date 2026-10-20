@@ -129,7 +129,10 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
 
   return (
     <View style={styles.game} testID="inbox-game">
-      <Text style={styles.muted}>Played {new Date(revision.playedAt).toLocaleString()}</Text>
+      <Text style={styles.muted}>
+        {game.kind === 'season' ? 'Season game' : 'Exhibition game'}, played{' '}
+        {new Date(revision.playedAt).toLocaleString()}
+      </Text>
       {revision.number > 1 && (
         <Text testID="inbox-corrected" style={styles.muted}>
           {reopened
@@ -141,6 +144,7 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
         <View key={side} style={styles.side} testID={`inbox-side-${side}`}>
           <Text style={styles.heading}>
             Side {side}
+            {revision.teams ? ` · ${revision.teams[side].name}` : ''}
             {revision.winner === side ? ' (won)' : ''}
           </Text>
           {revision.players
@@ -204,6 +208,7 @@ function PlayerRow({ player, isMe }: { player: GamePlayer; isMe: boolean }) {
       <Text style={styles.name}>
         {player.displayName}
         {isMe ? ' (you)' : ''}
+        {player.isSub ? ' (sub)' : ''}
       </Text>
       : {player.points} {player.points === 1 ? 'point' : 'points'}, {player.sinks}{' '}
       {player.sinks === 1 ? 'sink' : 'sinks'} · {state}

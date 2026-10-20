@@ -18,6 +18,9 @@ import { type Actor, assertCommissioner } from './membership.ts';
 // takes the game row, then the season row. Nothing takes a league or game lock while holding
 // a season lock, so the two paths can't deadlock. Season rows are locked FOR NO KEY UPDATE,
 // which a status change needs, and which leaves foreign-key checks on the season unblocked.
+// Submitting a season game, or reopening one, holds its season FOR SHARE instead, until it
+// commits: the season can't end, and its teams can't change, under the game, and that write
+// never asks for the season lock in a stronger mode, so two of them can't deadlock upgrading.
 
 // Drafts can't be deleted and every member loads the list, so a commissioner's creations are
 // capped. Far above what a real league needs.
