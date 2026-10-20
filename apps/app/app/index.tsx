@@ -93,6 +93,9 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
       <Link href="/stats" testID="stats-link" style={styles.link}>
         Stats
       </Link>
+      <Link href="/seasons" testID="seasons-link" style={styles.link}>
+        Seasons
+      </Link>
       <Link href="/members" testID="members-link" style={styles.link}>
         Members
       </Link>

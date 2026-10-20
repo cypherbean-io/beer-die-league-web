@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   AuditQuery,
   CorrectGameBody,
+  CreateSeasonBody,
+  DEFAULT_STANDINGS_CONFIG,
   DisplayName,
   ForceConfirmBody,
   nameKey,
@@ -11,6 +13,8 @@ import {
   PlayerStatsQuery,
   RulesBody,
   SettingsBody,
+  StandingsConfig,
+  StandingsConfigBody,
   SubmitGameBody,
 } from './schemas.ts';
 
@@ -381,6 +385,71 @@ describe('OverrideDecisionBody', () => {
     ['an unknown key', { decision: 'approve', reason: 'close enough' }],
   ])('rejects %s', (_label, body) => {
     expect(OverrideDecisionBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('CreateSeasonBody', () => {
+  it.each([
+    ['a plain name', 'Fall 2026', 'Fall 2026'],
+    ['an apostrophe', "Spring '27", "Spring '27"],
+    ['60 characters', 'a'.repeat(60), 'a'.repeat(60)],
+    ['surrounding and doubled spaces', '  Summer   League ', 'Summer League'],
+    ['a compatibility form, normalized', 'Ｆａｌｌ', 'Fall'],
+  ])('accepts %s', (_label, name, stored) => {
+    expect(CreateSeasonBody.parse({ name })).toEqual({ name: stored });
+  });
+
+  it.each([
+    ['an empty name', { name: '' }],
+    ['only spaces', { name: '   ' }],
+    ['61 characters', { name: 'a'.repeat(61) }],
+    ['a newline', { name: 'Fall\n2026' }],
+    ['a tab', { name: 'Fall\t2026' }],
+    ['a line separator', { name: 'Fall 2026\u2028Finalized' }],
+    ['a paragraph separator', { name: 'Fall 2026\u2029Finalized' }],
+    ['a right-to-left override', { name: 'Fall \u202E6202' }],
+    ['a bidi isolate', { name: '\u2066Fall 2026\u2069' }],
+    ['a zero-width space', { name: 'Fall\u200B2026' }],
+    ['a missing name', {}],
+    ['an unknown key', { name: 'Fall 2026', status: 'active' }],
+  ])('rejects %s', (_label, body) => {
+    expect(CreateSeasonBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('StandingsConfig', () => {
+  it('defaults to win%, then head-to-head, point difference, and sinks, with no minimum', () => {
+    expect(StandingsConfig.parse(DEFAULT_STANDINGS_CONFIG)).toEqual({
+      order: ['win_pct', 'head_to_head', 'point_diff', 'sinks'],
+      minGames: 0,
+    });
+  });
+});
+
+describe('StandingsConfigBody', () => {
+  it.each([
+    [{ order: ['wins'] }],
+    [{ order: ['win_pct', 'wins', 'point_diff', 'points_for', 'sinks', 'head_to_head'] }],
+    [{ minGames: 0 }],
+    [{ minGames: 99 }],
+    [{ order: ['head_to_head', 'win_pct'], minGames: 3 }],
+  ])('accepts %j', (body) => {
+    expect(StandingsConfigBody.safeParse(body).success).toBe(true);
+  });
+
+  it.each([
+    ['nothing to change', {}],
+    ['an empty order', { order: [] }],
+    ['a metric listed twice', { order: ['wins', 'sinks', 'wins'] }],
+    ['an unknown metric', { order: ['elo'] }],
+    ['a metric in upper case', { order: ['WINS'] }],
+    ['a negative minimum', { minGames: -1 }],
+    ['a minimum of 100', { minGames: 100 }],
+    ['a fractional minimum', { minGames: 1.5 }],
+    ['a minimum sent as a string', { minGames: '3' }],
+    ['an unknown key', { minGames: 3, tiebreak: 'coin' }],
+  ])('rejects %s', (_label, body) => {
+    expect(StandingsConfigBody.safeParse(body).success).toBe(false);
   });
 });
 

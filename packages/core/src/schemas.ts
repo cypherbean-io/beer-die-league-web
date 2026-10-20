@@ -159,6 +159,88 @@ export const SettingsBody = z
   .refine(atLeastOneKey, 'Change at least one setting');
 export type SettingsBody = z.input<typeof SettingsBody>;
 
+// One line of 1–60 visible characters, NFKC-normalized like a league name, with runs of
+// spaces collapsed. Every member sees season names, so like display names they can't hold
+// line breaks, direction overrides, or invisible characters that would disguise them.
+export const SeasonName = z
+  .string()
+  .max(200)
+  .transform((name) => name.normalize('NFKC').trim().replace(/ {2,}/g, ' '))
+  .pipe(
+    z
+      .string()
+      .min(1)
+      .max(60)
+      .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$/u, 'Use a single line of text')
+      .refine(
+        (name) => !/\p{Default_Ignorable_Code_Point}/u.test(name),
+        'Remove invisible characters',
+      ),
+  );
+
+export const CreateSeasonBody = z.strictObject({ name: SeasonName });
+export type CreateSeasonBody = z.input<typeof CreateSeasonBody>;
+
+// SPEC §3.7: draft → active (a commissioner starts it; one active season per league) → ended
+// (a commissioner ends it) → finalized (automatically, once none of its games has an open
+// revision). Finalization locks the season's standings config.
+export const SeasonStatus = z.enum(['draft', 'active', 'ended', 'finalized']);
+export type SeasonStatus = z.infer<typeof SeasonStatus>;
+
+// What season standings rank teams by, in order; each later metric breaks ties left by the
+// ones before it.
+export const StandingsMetric = z.enum([
+  'win_pct',
+  'wins',
+  'point_diff',
+  'points_for',
+  'sinks',
+  'head_to_head',
+]);
+export type StandingsMetric = z.infer<typeof StandingsMetric>;
+
+const StandingsOrder = z
+  .array(StandingsMetric)
+  .min(1)
+  .max(StandingsMetric.options.length)
+  .refine((order) => new Set(order).size === order.length, 'List each metric once');
+
+// Teams with fewer games than this are listed but unranked. A team with no games always is.
+const MinGames = z.int().min(0).max(99);
+
+export const StandingsConfig = z.strictObject({ order: StandingsOrder, minGames: MinGames });
+export type StandingsConfig = z.infer<typeof StandingsConfig>;
+
+export const DEFAULT_STANDINGS_CONFIG: StandingsConfig = {
+  order: ['win_pct', 'head_to_head', 'point_diff', 'sinks'],
+  minGames: 0,
+};
+
+// A partial update; `order` replaces the whole order.
+export const StandingsConfigBody = z
+  .strictObject({ order: StandingsOrder.optional(), minGames: MinGames.optional() })
+  .refine(atLeastOneKey, 'Change the order or the minimum games');
+export type StandingsConfigBody = z.input<typeof StandingsConfigBody>;
+
+export const Season = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  status: SeasonStatus,
+  createdAt: z.iso.datetime(),
+  startedAt: z.iso.datetime().nullable(),
+  endedAt: z.iso.datetime().nullable(),
+  finalizedAt: z.iso.datetime().nullable(),
+  standingsConfig: StandingsConfig,
+});
+export type Season = z.infer<typeof Season>;
+
+export const SeasonResponse = z.strictObject({ season: Season });
+export type SeasonResponse = z.infer<typeof SeasonResponse>;
+
+// Newest first.
+export const SeasonsResponse = z.strictObject({ seasons: z.array(Season) });
+export type SeasonsResponse = z.infer<typeof SeasonsResponse>;
+
 export const AUDIT_PAGE_MAX = 100;
 
 // Query strings arrive as strings. Only plain digits count as a limit, so "1e2" and " 5"
@@ -199,6 +281,9 @@ const OverrideDecidedDetails = z.strictObject({
   decision: OverrideDecision,
 });
 
+// The season an entry is about, named when the log is read rather than stored in `details`.
+const AuditSeason = z.strictObject({ id: z.uuid(), name: z.string() });
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -227,6 +312,27 @@ export const AuditEvent = z.discriminatedUnion('action', [
     action: z.literal('game.override_decided'),
     targetType: z.literal('game'),
     details: OverrideDecidedDetails,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('season.started'),
+    targetType: z.literal('season'),
+    details: z.strictObject({}),
+    season: AuditSeason,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('season.ended'),
+    targetType: z.literal('season'),
+    details: z.strictObject({}),
+    season: AuditSeason,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('season.standings_config_updated'),
+    targetType: z.literal('season'),
+    details: z.strictObject({ before: StandingsConfig, after: StandingsConfig }),
+    season: AuditSeason,
   }),
 ]);
 export type AuditEvent = z.infer<typeof AuditEvent>;

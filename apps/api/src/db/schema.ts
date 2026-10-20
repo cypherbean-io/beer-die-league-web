@@ -1,4 +1,4 @@
-import type { Rules, RuleViolation } from '@beer-die/core';
+import type { Rules, RuleViolation, StandingsConfig } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
@@ -14,6 +14,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -223,10 +224,50 @@ export const invites = pgTable(
   (t) => [index('invites_league_id_idx').on(t.leagueId)],
 );
 
+// A league's season (SPEC §3.7), moved through draft → active → ended → finalized only by
+// domain/seasons.ts. At most one season per league is active. An ended season finalizes once
+// none of its games has an open revision, which locks its standings config. Each timestamp is
+// set by the transition it names.
+export const seasons = pgTable(
+  'seasons',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    name: text('name').notNull(),
+    status: text('status', { enum: ['draft', 'active', 'ended', 'finalized'] }).notNull(),
+    standingsConfig: jsonb('standings_config').$type<StandingsConfig>().notNull(),
+    createdAt: ts('created_at').notNull(),
+    startedAt: ts('started_at'),
+    endedAt: ts('ended_at'),
+    finalizedAt: ts('finalized_at'),
+  },
+  (t) => [
+    // The target of games' (season_id, league_id) foreign key, which keeps every game in one
+    // of its own league's seasons.
+    unique('seasons_id_league_unique').on(t.id, t.leagueId),
+    index('seasons_league_id_idx').on(t.leagueId),
+    uniqueIndex('seasons_one_active_per_league')
+      .on(t.leagueId)
+      .where(sql`${t.status} = 'active'`),
+    check('seasons_status_valid', sql`${t.status} in ('draft', 'active', 'ended', 'finalized')`),
+    check('seasons_started_has_time', sql`(${t.status} <> 'draft') = (${t.startedAt} is not null)`),
+    check(
+      'seasons_ended_has_time',
+      sql`(${t.status} in ('ended', 'finalized')) = (${t.endedAt} is not null)`,
+    ),
+    check(
+      'seasons_finalized_has_time',
+      sql`(${t.status} = 'finalized') = (${t.finalizedAt} is not null)`,
+    ),
+  ],
+);
+
 // A recorded game. Its rules snapshot is the league rules at first submission, and every
 // revision is checked against it, so editing the league rules never re-validates a game.
 // Retrying a submission with the same idempotency key returns this game, provided the
-// payload hash matches. Season columns (season_id, team ids) arrive with seasons.
+// payload hash matches. Team ids arrive with teams.
 export const games = pgTable(
   'games',
   {
@@ -235,6 +276,8 @@ export const games = pgTable(
       .notNull()
       .references(() => leagues.id),
     kind: text('kind', { enum: ['season', 'exhibition'] }).notNull(),
+    // Set exactly when the game is a season game.
+    seasonId: uuid('season_id'),
     status: text('status', { enum: ['pending', 'confirmed', 'expired', 'voided'] }).notNull(),
     openRevisionId: uuid('open_revision_id').references((): AnyPgColumn => gameRevisions.id),
     // The revision stats read. Set only by settleRevision (domain/games.ts).
@@ -256,7 +299,17 @@ export const games = pgTable(
   },
   (t) => [
     unique('games_idempotency_unique').on(t.leagueId, t.submittedBy, t.idempotencyKey),
+    foreignKey({
+      name: 'games_season_league_fk',
+      columns: [t.seasonId, t.leagueId],
+      foreignColumns: [seasons.id, seasons.leagueId],
+    }),
+    // Finalizing a season looks for its games that still have an open revision.
+    index('games_season_open_idx')
+      .on(t.seasonId)
+      .where(sql`${t.openRevisionId} is not null`),
     check('games_kind_valid', sql`${t.kind} in ('season', 'exhibition')`),
+    check('games_season_matches_kind', sql`(${t.kind} = 'season') = (${t.seasonId} is not null)`),
     check('games_status_valid', sql`${t.status} in ('pending', 'confirmed', 'expired', 'voided')`),
     // A game that has counted keeps counting through a reopen that expires or is voided.
     check(

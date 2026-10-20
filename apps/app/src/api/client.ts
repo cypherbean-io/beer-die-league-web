@@ -23,7 +23,11 @@ import {
   PlayerStatResponse,
   PlayerStatsResponse,
   type RulesBody,
+  type Season,
+  SeasonResponse,
+  SeasonsResponse,
   type SettingsBody,
+  type StandingsConfigBody,
   type StatsScope,
   type SubmitGameBody,
   VerifyCodeResponse,
@@ -242,4 +246,42 @@ export async function listInvites(leagueId: string): Promise<Invite[]> {
 export async function revokeInvite(leagueId: string, inviteId: string): Promise<void> {
   const path = `${leaguePath(leagueId)}/invites/${encodeURIComponent(inviteId)}`;
   await expectOk(await sendJson('DELETE', path));
+}
+
+// Newest first.
+export async function getSeasons(leagueId: string): Promise<Season[]> {
+  return (await getJson(`${leaguePath(leagueId)}/seasons`, SeasonsResponse)).seasons;
+}
+
+export async function createSeason(leagueId: string, name: string): Promise<Season> {
+  const res = await postJson(`${leaguePath(leagueId)}/seasons`, { name });
+  if (!res.ok) throw await failure(res);
+  return SeasonResponse.parse(await res.json()).season;
+}
+
+function seasonPath(leagueId: string, seasonId: string, action: string): string {
+  return `${leaguePath(leagueId)}/seasons/${encodeURIComponent(seasonId)}/${action}`;
+}
+
+export async function startSeason(leagueId: string, seasonId: string): Promise<Season> {
+  const res = await postJson(seasonPath(leagueId, seasonId, 'start'), {});
+  if (!res.ok) throw await failure(res);
+  return SeasonResponse.parse(await res.json()).season;
+}
+
+export async function endSeason(leagueId: string, seasonId: string): Promise<Season> {
+  const res = await postJson(seasonPath(leagueId, seasonId, 'end'), {});
+  if (!res.ok) throw await failure(res);
+  return SeasonResponse.parse(await res.json()).season;
+}
+
+// Send only the fields that changed, so a concurrent edit to the other one survives.
+export async function updateStandingsConfig(
+  leagueId: string,
+  seasonId: string,
+  patch: StandingsConfigBody,
+): Promise<Season> {
+  const res = await sendJson('PATCH', seasonPath(leagueId, seasonId, 'standings-config'), patch);
+  if (!res.ok) throw await failure(res);
+  return SeasonResponse.parse(await res.json()).season;
 }
