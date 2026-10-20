@@ -343,7 +343,7 @@ export const teamRoster = pgTable(
 // A recorded game. Its rules snapshot is the league rules at first submission, and every
 // revision is checked against it, so editing the league rules never re-validates a game.
 // Retrying a submission with the same idempotency key returns this game, provided the
-// payload hash matches. Team ids arrive with teams.
+// payload hash matches. A season game's teams are on its revisions.
 export const games = pgTable(
   'games',
   {
@@ -375,6 +375,8 @@ export const games = pgTable(
   },
   (t) => [
     unique('games_idempotency_unique').on(t.leagueId, t.submittedBy, t.idempotencyKey),
+    // The target of game_revisions' (game_id, season_id) foreign key.
+    unique('games_id_season_unique').on(t.id, t.seasonId),
     foreignKey({
       name: 'games_season_league_fk',
       columns: [t.seasonId, t.leagueId],
@@ -399,7 +401,11 @@ export const games = pgTable(
   ],
 );
 
-// Immutable: a correction creates a new revision rather than editing one.
+// Immutable: a correction creates a new revision rather than editing one. A season game's
+// revision names the team each side played for, both or neither; a correction keeps them with
+// their players, so a later roster change never moves a game to another team. The foreign keys
+// keep both teams in the game's own season, so a revision can't name another season's or
+// league's team.
 export const gameRevisions = pgTable(
   'game_revisions',
   {
@@ -415,6 +421,10 @@ export const gameRevisions = pgTable(
       .notNull()
       .references(() => memberships.id),
     playedAt: ts('played_at').notNull(),
+    // The game's season, set exactly when the revision names teams.
+    seasonId: uuid('season_id'),
+    sideATeamId: uuid('side_a_team_id'),
+    sideBTeamId: uuid('side_b_team_id'),
     winner: text('winner', { enum: ['A', 'B'] }).notNull(),
     // checkRules against the game's rules snapshot; empty means the revision conforms.
     ruleViolations: jsonb('rule_violations').$type<RuleViolation[]>().notNull(),
@@ -439,10 +449,37 @@ export const gameRevisions = pgTable(
       'game_revisions_decided_has_override_by',
       sql`coalesce(${t.overrideStatus} in ('approved', 'rejected'), false) = (${t.overrideBy} is not null)`,
     ),
+    foreignKey({
+      name: 'game_revisions_game_season_fk',
+      columns: [t.gameId, t.seasonId],
+      foreignColumns: [games.id, games.seasonId],
+    }),
+    foreignKey({
+      name: 'game_revisions_side_a_team_season_fk',
+      columns: [t.sideATeamId, t.seasonId],
+      foreignColumns: [seasonTeams.id, seasonTeams.seasonId],
+    }),
+    foreignKey({
+      name: 'game_revisions_side_b_team_season_fk',
+      columns: [t.sideBTeamId, t.seasonId],
+      foreignColumns: [seasonTeams.id, seasonTeams.seasonId],
+    }),
+    check(
+      'game_revisions_teams_both_or_neither',
+      sql`(${t.sideATeamId} is null) = (${t.sideBTeamId} is null)`,
+    ),
+    // With the check above, every column of each foreign key is set or none is, so the keys
+    // always apply to a revision that names teams.
+    check(
+      'game_revisions_teams_have_season',
+      sql`(${t.seasonId} is null) = (${t.sideATeamId} is null)`,
+    ),
+    check('game_revisions_teams_distinct', sql`${t.sideATeamId} <> ${t.sideBTeamId}`),
   ],
 );
 
-// Exactly four rows per revision, two per side. `is_sub` is derived by the server.
+// Exactly four rows per revision, two per side. `is_sub` is derived by the server: in a season
+// game, a player who wasn't on their side's team's roster when it was first submitted.
 export const revisionPlayers = pgTable(
   'revision_players',
   {

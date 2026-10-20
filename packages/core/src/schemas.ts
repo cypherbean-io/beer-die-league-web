@@ -496,7 +496,13 @@ const PlayerLineBody = z.strictObject({
   sinks: LineValue,
 });
 
-const SideBody = z.strictObject({ players: z.array(PlayerLineBody).length(2) });
+const players = z.array(PlayerLineBody).length(2);
+
+const SideBody = z.strictObject({ players });
+
+// A season game's side names the team it played for. The server checks the players against
+// that team's roster and derives which of them is a sub.
+const SeasonSideBody = z.strictObject({ teamId: z.uuid(), players });
 
 const PLAYED_AT_FLOOR = Date.parse('2000-01-01T00:00:00.000Z');
 
@@ -515,20 +521,36 @@ const resultFields = {
   requestOverride: z.boolean().optional(),
 };
 
-// The first submission of a game. `idempotencyKey` is generated once per draft, so a
-// retried submission returns the original game.
-export const SubmitGameBody = z.strictObject({
+// The first submission of an exhibition game: any four approved members.
+export const ExhibitionGameBody = z.strictObject({
   idempotencyKey: z.uuid(),
-  // Season games arrive with seasons (SPEC §3.10, slice 5).
   kind: z.literal('exhibition'),
   ...resultFields,
 });
+export type ExhibitionGameBody = z.input<typeof ExhibitionGameBody>;
+
+// The first submission of a season game (SPEC §3.7): two approved teams of the active season,
+// each side its team's roster with at most one sub.
+export const SeasonGameBody = z.strictObject({
+  idempotencyKey: z.uuid(),
+  kind: z.literal('season'),
+  seasonId: z.uuid(),
+  ...resultFields,
+  sides: z.strictObject({ A: SeasonSideBody, B: SeasonSideBody }),
+});
+export type SeasonGameBody = z.input<typeof SeasonGameBody>;
+
+// The first submission of a game. `idempotencyKey` is generated once per draft, so a
+// retried submission returns the original game.
+export const SubmitGameBody = z.discriminatedUnion('kind', [ExhibitionGameBody, SeasonGameBody]);
 export type SubmitGameBody = z.input<typeof SubmitGameBody>;
 
 // A corrected result, which becomes the game's new open revision. The game keeps its kind.
 // `baseRevisionId` is the revision the author was shown: the open one, or, for a confirmed
 // game with nothing open, the confirmed one, which reopens the game. If the game has moved on
-// since, the correction is refused, so nobody overwrites numbers they haven't seen.
+// since, the correction is refused, so nobody overwrites numbers they haven't seen. A season
+// game also keeps its teams, which follow their players from the base revision, so a
+// correction names no teams.
 export const CorrectGameBody = z.strictObject({
   baseRevisionId: z.uuid(),
   ...resultFields,
@@ -592,11 +614,14 @@ export const GamePlayer = z.strictObject({
   side: GameSide,
   points: z.int(),
   sinks: z.int(),
+  // Derived by the server: in a season game, a player who wasn't on their side's team.
   isSub: z.boolean(),
   // How the player confirmed this revision, or null while their confirmation is pending.
   confirmation: ConfirmationKind.nullable(),
 });
 export type GamePlayer = z.infer<typeof GamePlayer>;
+
+const GameTeam = z.strictObject({ id: z.uuid(), name: z.string() });
 
 // Revisions are immutable; a correction creates a new one.
 export const GameRevision = z.strictObject({
@@ -611,12 +636,17 @@ export const GameRevision = z.strictObject({
   // Empty when the revision conforms to the game's rules snapshot.
   ruleViolations: z.array(GameRuleViolation),
   overrideStatus: OverrideStatus.nullable(),
+  // The team each side played for in a season game; null for an exhibition game. Only an
+  // approved team plays one, so every member may see its name.
+  teams: z.strictObject({ A: GameTeam, B: GameTeam }).nullable(),
 });
 export type GameRevision = z.infer<typeof GameRevision>;
 
 export const Game = z.strictObject({
   id: z.uuid(),
   kind: GameKind,
+  // Set exactly when the game is a season game.
+  seasonId: z.uuid().nullable(),
   status: GameStatus,
   // The rules at first submission. Every revision of the game is checked against these.
   rulesSnapshot: LeagueRules,

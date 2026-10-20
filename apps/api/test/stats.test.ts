@@ -11,7 +11,7 @@ import {
   PlayerStatResponse,
   type PlayerStats,
   PlayerStatsResponse,
-  type SubmitGameBody,
+  type ExhibitionGameBody,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -105,7 +105,7 @@ const line = (p: Player, points: number, sinks = 0) => ({
 });
 
 // Ana and Bo beat Cy and Di 11–9, half an hour ago.
-function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
+function game(t: Table, patch: Partial<ExhibitionGameBody> = {}): ExhibitionGameBody {
   return {
     idempotencyKey: randomUUID(),
     kind: 'exhibition',
@@ -119,7 +119,7 @@ function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
   };
 }
 
-async function submitted(t: League, as: Caller, body: SubmitGameBody): Promise<Game> {
+async function submitted(t: League, as: Caller, body: ExhibitionGameBody): Promise<Game> {
   const res = await call('POST', `/api/leagues/${t.leagueId}/games`, { as, body });
   expect(res.status).toBe(201);
   return GameResponse.parse(await res.json()).game;
@@ -141,7 +141,7 @@ async function confirmed(t: League, as: Caller, g: Game): Promise<Game> {
 
 // Submitted by the first side A player, then confirmed by the other three. `also` lists any
 // players from outside the table.
-async function counted(t: Table, body: SubmitGameBody, also: Player[] = []): Promise<Game> {
+async function counted(t: Table, body: ExhibitionGameBody, also: Player[] = []): Promise<Game> {
   const players = [t.ana, t.bo, t.cy, t.di, ...also];
   const lines = [...body.sides.A.players, ...body.sides.B.players];
   const [submitter, ...others] = lines.map((l) =>

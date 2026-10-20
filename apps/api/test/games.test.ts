@@ -9,7 +9,7 @@ import {
   INBOX_MAX,
   InboxResponse,
   JoinResponse,
-  type SubmitGameBody,
+  type ExhibitionGameBody,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
@@ -137,7 +137,7 @@ const line = (p: Player | string, points: number, sinks = 0) => ({
 });
 
 // Ana and Bo beat Cy and Di 11–9, half an hour ago.
-function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
+function game(t: Table, patch: Partial<ExhibitionGameBody> = {}): ExhibitionGameBody {
   return {
     idempotencyKey: randomUUID(),
     kind: 'exhibition',
@@ -152,7 +152,7 @@ function game(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
 }
 
 // Ana and Bo win 11–10, one point short of the default win-by.
-function marginTooSmall(t: Table, patch: Partial<SubmitGameBody> = {}): SubmitGameBody {
+function marginTooSmall(t: Table, patch: Partial<ExhibitionGameBody> = {}): ExhibitionGameBody {
   return game(t, {
     sides: {
       A: { players: [line(t.ana, 6), line(t.bo, 5)] },
@@ -356,6 +356,7 @@ describe('submitting an exhibition game', () => {
     expect(recorded).toEqual({
       id: expect.any(String),
       kind: 'exhibition',
+      seasonId: null,
       status: 'pending',
       windowExpiresAt: '2026-10-25T12:00:00.000Z',
       rulesSnapshot: DEFAULT_RULES,
@@ -368,6 +369,7 @@ describe('submitting an exhibition game', () => {
         winner: 'A',
         ruleViolations: [],
         overrideStatus: null,
+        teams: null,
         players: [
           {
             membershipId: t.ana.membershipId,
@@ -598,7 +600,7 @@ describe('validation', () => {
   });
 
   it.each<[string, (t: Table) => unknown]>([
-    ['a season game, which needs seasons', (t) => ({ ...game(t), kind: 'season' })],
+    ['a season game without its season or teams', (t) => ({ ...game(t), kind: 'season' })],
     ['a missing winner', (t) => ({ ...game(t), winner: undefined })],
     [
       'three players on one side',
@@ -1280,6 +1282,7 @@ describe('correcting a game', () => {
       winner: 'A',
       ruleViolations: [],
       overrideStatus: null,
+      teams: null,
       players: [
         expect.objectContaining({ membershipId: t.ana.membershipId, side: 'A', points: 6 }),
         expect.objectContaining({ membershipId: t.bo.membershipId, side: 'A', points: 5 }),

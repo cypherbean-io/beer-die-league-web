@@ -260,8 +260,51 @@ describe('SubmitGameBody', () => {
     expect(SubmitGameBody.safeParse(withLine(patch)).success).toBe(true);
   });
 
+  const teams = ['0199f3a2-5c1e-7a00-8000-0000000000a1', '0199f3a2-5c1e-7a00-8000-0000000000b1'];
+  const seasonGame = {
+    ...valid,
+    kind: 'season',
+    seasonId: '0199f3a2-5c1e-7a00-8000-0000000000c1',
+    sides: {
+      A: { teamId: teams[0], players: valid.sides.A.players },
+      B: { teamId: teams[1], players: valid.sides.B.players },
+    },
+  };
+
+  it('accepts a season game with its season and the team on each side', () => {
+    expect(SubmitGameBody.safeParse(seasonGame).success).toBe(true);
+  });
+
   it.each([
-    ['a season game, which needs seasons', { ...valid, kind: 'season' }],
+    ['a season game without a season', { ...seasonGame, seasonId: undefined }],
+    [
+      'a season game without a team on a side',
+      { ...seasonGame, sides: { ...seasonGame.sides, B: { players: valid.sides.B.players } } },
+    ],
+    ['a season game with a season id that is not a UUID', { ...seasonGame, seasonId: 'fall' }],
+    [
+      'an exhibition game with a team on a side',
+      { ...seasonGame, kind: 'exhibition', seasonId: undefined },
+    ],
+    [
+      'a client-derived sub flag in a season game',
+      {
+        ...seasonGame,
+        sides: {
+          ...seasonGame.sides,
+          A: {
+            ...seasonGame.sides.A,
+            players: [{ ...line(ids[0], 6), isSub: false }, line(ids[1], 5)],
+          },
+        },
+      },
+    ],
+  ])('rejects %s', (_label, body) => {
+    expect(SubmitGameBody.safeParse(body).success).toBe(false);
+  });
+
+  it.each([
+    ['a kind other than season or exhibition', { ...valid, kind: 'friendly' }],
     ['a missing winner', { ...valid, winner: undefined }],
     ['a winner other than A or B', { ...valid, winner: 'C' }],
     ['a date without a time', { ...valid, playedAt: '2026-10-18' }],
@@ -341,6 +384,15 @@ describe('CorrectGameBody', () => {
     ['a missing side', { ...valid, sides: { A: valid.sides.A } }],
     ['100 points', withLine({ points: 100 })],
     ['a client-derived sub flag', withLine({ isSub: false })],
+    // A season game's teams follow its players from the base revision.
+    [
+      'a team on a side',
+      {
+        ...valid,
+        sides: { ...valid.sides, A: { ...valid.sides.A, teamId: ids[0] } },
+      },
+    ],
+    ['a season', { ...valid, seasonId: ids[0] }],
     ['an unknown key', { ...valid, gameId: ids[0] }],
   ])('rejects %s', (_label, body) => {
     expect(CorrectGameBody.safeParse(body).success).toBe(false);
