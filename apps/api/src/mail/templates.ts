@@ -8,6 +8,7 @@ import { open, seal } from '../crypto.ts';
 export const SIGN_IN_CODE = 'sign_in_code';
 export const MEMBER_PENDING = 'member_pending';
 export const GAME_REVISION = 'game_revision';
+export const OVERRIDE_REQUESTED = 'override_requested';
 
 const SignInCodeParams = z.strictObject({ code: z.string(), expiresAt: z.iso.datetime() });
 
@@ -41,6 +42,17 @@ export function gameRevisionParams(
   return { authorName, action, link };
 }
 
+// Sent to commissioners when a revision that breaks the rules is sent for review. The
+// author's name and a link only: no scores, no rule violations, no game id.
+const OverrideRequestedParams = z.strictObject({
+  authorName: DisplayName,
+  link: z.url({ protocol: /^https?$/ }),
+});
+
+export function overrideRequestedParams(authorName: string, link: string) {
+  return { authorName, link };
+}
+
 export type Rendered = { subject: string; text: string };
 export type Render =
   Rendered | { drop: 'BAD_PARAMS' | 'EXPIRED' | 'UNREADABLE' | 'UNKNOWN_TEMPLATE' };
@@ -53,6 +65,7 @@ export function renderEmail(
   if (template === SIGN_IN_CODE) return renderSignInCode(params, ctx);
   if (template === MEMBER_PENDING) return renderMemberPending(params);
   if (template === GAME_REVISION) return renderGameRevision(params);
+  if (template === OVERRIDE_REQUESTED) return renderOverrideRequested(params);
   return { drop: 'UNKNOWN_TEMPLATE' };
 }
 
@@ -69,6 +82,20 @@ function renderGameRevision(params: unknown): Render {
       `${authorName} ${action} a game with you.`,
       '',
       `Check the result, then confirm it or propose a correction: ${link}`,
+      '',
+    ].join('\n'),
+  };
+}
+
+function renderOverrideRequested(params: unknown): Render {
+  const parsed = OverrideRequestedParams.safeParse(params);
+  if (!parsed.success) return { drop: 'BAD_PARAMS' };
+  return {
+    subject: 'A game is waiting for commissioner review',
+    text: [
+      `${parsed.data.authorName} recorded a game that breaks the league rules and asked a commissioner to review it.`,
+      '',
+      `Review it: ${parsed.data.link}`,
       '',
     ].join('\n'),
   };

@@ -432,6 +432,55 @@ describe('player stats', () => {
     expect(await stats(t, t.ana.caller, 'combined')).toEqual([]);
   });
 
+  it('counts a rule-breaking game fully once a commissioner approves it', async () => {
+    const t = await table();
+    // 11–10 is one point short of the default win-by.
+    const g = await submitted(
+      t,
+      t.ana.caller,
+      game(t, {
+        sides: {
+          A: { players: [line(t.ana, 6), line(t.bo, 5, 1)] },
+          B: { players: [line(t.cy, 5), line(t.di, 5)] },
+        },
+        requestOverride: true,
+      }),
+    );
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    await confirmed(t, t.di.caller, g);
+
+    const res = await call(
+      'POST',
+      `/api/leagues/${t.leagueId}/games/${g.id}/revisions/${g.openRevision!.id}/override`,
+      { as: t.commissioner, body: { decision: 'approve' } },
+    );
+
+    expect(res.status).toBe(200);
+    const oneGame = (p: Player, displayName: string, won: boolean, points: number, sinks = 0) => ({
+      ...noGames(p, displayName),
+      gamesPlayed: 1,
+      wins: won ? 1 : 0,
+      losses: won ? 0 : 1,
+      winPct: won ? 1 : 0,
+      points,
+      pointsPerGame: points,
+      sinks,
+      sinksPerGame: sinks,
+    });
+    for (const scope of ['exhibition', 'combined']) {
+      expect(await stats(t, t.ana.caller, scope)).toEqual(
+        expect.arrayContaining([
+          oneGame(t.ana, 'Ana', true, 6),
+          oneGame(t.bo, 'Bo', true, 5, 1),
+          oneGame(t.cy, 'Cy', false, 5),
+          oneGame(t.di, 'Di', false, 5),
+        ]),
+      );
+      expect(await stats(t, t.ana.caller, scope)).toHaveLength(4);
+    }
+  });
+
   // Defence in depth: only the code that confirms a revision sets confirmed_revision_id.
   it('never counts a revision under a game it does not belong to', async () => {
     const t = await table();

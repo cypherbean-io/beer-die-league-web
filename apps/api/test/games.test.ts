@@ -262,6 +262,27 @@ async function forced(t: League, g: Game, players: Player[]): Promise<Game> {
   return GameResponse.parse(await res.json()).game;
 }
 
+function override(
+  t: League,
+  as: Caller,
+  gameId: string,
+  revisionId: string,
+  body: unknown,
+): Promise<Response> {
+  return call(
+    'POST',
+    `/api/leagues/${t.leagueId}/games/${gameId}/revisions/${revisionId}/override`,
+    { as, body },
+  );
+}
+
+// The commissioner decides the review of the open revision shown in `g`.
+async function decided(t: League, g: Game, decision: 'approve' | 'reject'): Promise<Game> {
+  const res = await override(t, t.commissioner, g.id, g.openRevision!.id, { decision });
+  expect(res.status).toBe(200);
+  return GameResponse.parse(await res.json()).game;
+}
+
 async function auditLog(t: League, as: Caller) {
   const res = await call('GET', `/api/leagues/${t.leagueId}/audit`, { as });
   expect(res.status).toBe(200);
@@ -1558,10 +1579,7 @@ describe('validating a correction', () => {
   it("does not carry the base revision's approved override over to the correction", async () => {
     const t = await table();
     const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
-    // Commissioners decide overrides in slice 4; until then the approval is written directly.
-    await api.db.execute(
-      sql`update game_revisions set override_status = 'approved' where id = ${g.openRevision!.id}`,
-    );
+    await decided(t, g, 'approve');
 
     const refused = await correct(
       t,
@@ -2326,6 +2344,650 @@ describe('force-confirming', () => {
   });
 });
 
+describe('deciding an override', () => {
+  // Bo sends Ed, Bo, Cy, and Di's 11–10 game for review, so Ana, the commissioner, sat it out.
+  async function reviewWithoutAna(t: Table): Promise<Game> {
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    return submitted(
+      t,
+      t.bo.caller,
+      game(t, {
+        sides: {
+          A: { players: [line(ed, 6), line(t.bo, 5)] },
+          B: { players: [line(t.cy, 5), line(t.di, 5)] },
+        },
+        requestOverride: true,
+      }),
+    );
+  }
+
+  // Ana's 11–10 game, sent for review.
+  const sentForReview = (t: Table) =>
+    submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+
+  // Ana's 11–10 game, sent for review, then confirmed by Bo, Cy, and Di.
+  async function confirmedAwaitingReview(t: Table): Promise<Game> {
+    const g = await sentForReview(t);
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    return confirmed(t, t.di.caller, g);
+  }
+
+  async function promoted(t: League, p: Player): Promise<void> {
+    const res = await call('POST', `/api/leagues/${t.leagueId}/members/${p.membershipId}/role`, {
+      as: t.commissioner,
+      body: { role: 'commissioner' },
+    });
+    expect(res.status).toBe(200);
+  }
+
+  it('confirms the game, so it counts, when a commissioner approves after all four have confirmed', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+
+    const after = await decided(t, g, 'approve');
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      windowExpiresAt: null,
+      openRevision: null,
+      confirmedRevision: {
+        id: g.openRevision!.id,
+        status: 'confirmed',
+        overrideStatus: 'approved',
+      },
+    });
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it('confirms the game on the last confirmation when a commissioner approved it first', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await decided(t, g, 'approve');
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+
+    const after = await confirmed(t, t.di.caller, g);
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      confirmedRevision: { id: g.openRevision!.id, overrideStatus: 'approved' },
+    });
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it('leaves an approved game pending until all four players have confirmed', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+
+    const after = await decided(t, g, 'approve');
+
+    expect(after).toMatchObject({
+      status: 'pending',
+      confirmedRevision: null,
+      openRevision: { id: g.openRevision!.id, status: 'open', overrideStatus: 'approved' },
+    });
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  it('confirms an approved game once a commissioner force-confirms the silent players', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await decided(t, g, 'approve');
+
+    const after = await forced(t, g, [t.bo, t.cy, t.di]);
+
+    expect(after.status).toBe('confirmed');
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it.each(['approve', 'reject'] as const)(
+    'stores which commissioner decided a %s',
+    async (decision) => {
+      const t = await table();
+      const g = await sentForReview(t);
+
+      await decided(t, g, decision);
+
+      const stored = await api.db.execute<{ override_status: string; override_by: string }>(
+        sql`select override_status, override_by from game_revisions`,
+      );
+      expect([...stored]).toEqual([
+        {
+          override_status: decision === 'approve' ? 'approved' : 'rejected',
+          override_by: t.ana.membershipId,
+        },
+      ]);
+    },
+  );
+
+  it.each(['approve', 'reject'] as const)(
+    'records an audit entry of a %s for every member to see',
+    async (decision) => {
+      const t = await table();
+      const g = await reviewWithoutAna(t);
+      await decided(t, g, decision);
+
+      const events = await auditLog(t, t.cy.caller);
+
+      expect(events).toEqual([
+        {
+          id: expect.any(String),
+          createdAt: clock.now().toISOString(),
+          actor: { membershipId: t.ana.membershipId, displayName: 'Ana' },
+          actorWasParticipant: false,
+          action: 'game.override_decided',
+          targetType: 'game',
+          targetId: g.id,
+          details: { revisionId: g.openRevision!.id, decision },
+        },
+      ]);
+    },
+  );
+
+  it('flags the audit entry when the commissioner played in the game', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+
+    await decided(t, g, 'approve');
+
+    const [event] = await auditLog(t, t.bo.caller);
+    expect(event).toMatchObject({ action: 'game.override_decided', actorWasParticipant: true });
+  });
+
+  it('rejects the revision, so the game does not count even with all four confirmations', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+
+    const after = await decided(t, g, 'reject');
+
+    expect(after).toMatchObject({
+      status: 'pending',
+      confirmedRevision: null,
+      openRevision: { id: g.openRevision!.id, status: 'rejected', overrideStatus: 'rejected' },
+    });
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  it('drops a rejected revision from the inbox of players yet to confirm it', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+
+    await decided(t, g, 'reject');
+
+    expect(await inbox(t, t.bo.caller)).toEqual([]);
+  });
+
+  it('refuses confirming a rejected revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await decided(t, g, 'reject');
+
+    const res = await confirm(t, t.bo.caller, g.id, g.openRevision!.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('refuses force-confirming a rejected revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await decided(t, g, 'reject');
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.bo.membershipId],
+    });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('lets a player correct a rejected revision within the window, which keeps running', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    clock.advance(DAY);
+    const rejected = await decided(t, g, 'reject');
+
+    const fixed = await corrected(t, t.di.caller, g.id, correction(t, rejected));
+
+    expect(fixed).toMatchObject({
+      status: 'pending',
+      windowExpiresAt: g.windowExpiresAt,
+      openRevision: { number: 2, status: 'open', ruleViolations: [], overrideStatus: null },
+    });
+    expect(confirmationsOf(fixed)).toEqual([null, null, null, 'player']);
+    expect(await revisionStatus(g.openRevision!.id)).toBe('superseded');
+  });
+
+  it('refuses correcting a rejected revision once the window has closed with 409 WINDOW_CLOSED', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    const rejected = await decided(t, g, 'reject');
+    clock.advance(7 * DAY);
+
+    const res = await correct(t, t.di.caller, g.id, correction(t, rejected));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await rows('game_revisions')).toBe(1);
+  });
+
+  it('expires a rejected game once its window closes, keeping the rejection', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await decided(t, g, 'reject');
+    clock.advance(7 * DAY);
+
+    await sweepExpired({ db: api.db, clock });
+
+    expect(await storedStatus(g.id)).toBe('expired');
+    expect(await revisionStatus(g.openRevision!.id)).toBe('rejected');
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  it.each(['approve', 'reject'] as const)(
+    'answers a repeated %s with the game unchanged, auditing it once',
+    async (decision) => {
+      const t = await table();
+      const g = await confirmedAwaitingReview(t);
+      const first = await decided(t, g, decision);
+
+      const again = await decided(t, g, decision);
+
+      expect(again).toEqual(first);
+      expect(await rows('audit_events')).toBe(1);
+    },
+  );
+
+  it.each([
+    ['reversing an approval', 'approve', 'reject'],
+    ['approving a rejected revision', 'reject', 'approve'],
+  ] as const)('refuses %s with 409 NOT_AWAITING_REVIEW', async (_label, first, second) => {
+    const t = await table();
+    const g = await sentForReview(t);
+    const before = await decided(t, g, first);
+
+    const res = await override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: second });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('NOT_AWAITING_REVIEW');
+    expect(await rows('audit_events')).toBe(1);
+    expect(await revisionStatus(g.openRevision!.id)).toBe(before.openRevision!.status);
+  });
+
+  it('refuses a revision that breaks no rule with 409 NOT_AWAITING_REVIEW', async () => {
+    const t = await table();
+    const g = await submitted(t, t.bo.caller, game(t, { requestOverride: true }));
+
+    const res = await override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('NOT_AWAITING_REVIEW');
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('refuses a member who is not a commissioner with 403, even one who played', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+
+    const res = await override(t, t.bo.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('refuses a commissioner demoted while the request waited with 403', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+    let pending: Promise<Response> | undefined;
+
+    // The request passes the role check it can make up front, then waits on the game lock
+    // while Ana loses the role.
+    await api.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from games where id = ${g.id} for update`);
+      pending = override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+      await waitForLockWaiters(api.db, 1);
+      await api.db.execute(
+        sql`update memberships set role = 'member' where id = ${t.ana.membershipId}`,
+      );
+    });
+    const res = await pending!;
+
+    expect(res.status).toBe(403);
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('refuses a revision whose window has closed with 409 WINDOW_CLOSED, so the game never counts', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+    clock.advance(7 * DAY);
+
+    const res = await override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('accepts a decision 1 s before the window closes', async () => {
+    const t = await table();
+    const g = await confirmedAwaitingReview(t);
+    clock.advance(7 * DAY - SECOND);
+
+    const after = await decided(t, g, 'approve');
+
+    expect(after.status).toBe('confirmed');
+  });
+
+  it('refuses a superseded revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+
+    const res = await override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it.each([
+    ['an unknown decision', { decision: 'maybe' }],
+    ['no decision', {}],
+    ['an unknown key', { decision: 'approve', reason: 'close enough' }],
+  ])('rejects a body with %s with 422 VALIDATION', async (_label, body) => {
+    const t = await table();
+    const g = await sentForReview(t);
+
+    const res = await override(t, t.ana.caller, g.id, g.openRevision!.id, body);
+
+    expect(res.status).toBe(422);
+    expect((await errorOf(res)).code).toBe('VALIDATION');
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('gives 404 for a revision that belongs to a different game', async () => {
+    const t = await table();
+    const first = await sentForReview(t);
+    const second = await sentForReview(t);
+
+    const res = await override(t, t.ana.caller, first.id, second.openRevision!.id, {
+      decision: 'approve',
+    });
+
+    expect(res.status).toBe(404);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it("gives 404 to a commissioner of another league, even through their own league's path", async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    const other = await league('Attic League', 'zed@example.com', 'Zed');
+
+    const res = await override(other, other.commissioner, g.id, g.openRevision!.id, {
+      decision: 'approve',
+    });
+
+    expect(res.status).toBe(404);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('accepts the game and revision ids in upper case', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+
+    const res = await override(
+      t,
+      t.ana.caller,
+      g.id.toUpperCase(),
+      g.openRevision!.id.toUpperCase(),
+      {
+        decision: 'approve',
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(GameResponse.parse(await res.json()).game.openRevision!.overrideStatus).toBe('approved');
+  });
+
+  it('replaces the counted revision once an approved correction of a reopened game confirms', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const counted = await confirmed(t, t.di.caller, g);
+    const reopened = await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, counted, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+    await confirmed(t, t.ana.caller, reopened);
+    await confirmed(t, t.bo.caller, reopened);
+    await confirmed(t, t.cy.caller, reopened);
+    expect(await countedRevision(g.id)).toBe(counted.confirmedRevision!.id);
+
+    const after = await decided(t, reopened, 'approve');
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      openRevision: null,
+      confirmedRevision: { id: reopened.openRevision!.id, overrideStatus: 'approved' },
+    });
+    expect(await countedRevision(g.id)).toBe(reopened.openRevision!.id);
+    expect(await revisionStatus(counted.confirmedRevision!.id)).toBe('superseded');
+  });
+
+  it('keeps the confirmed revision counting when a correction of a reopened game is rejected', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const counted = await confirmed(t, t.di.caller, g);
+    const reopened = await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, counted, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+
+    const after = await decided(t, reopened, 'reject');
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      openRevision: { id: reopened.openRevision!.id, status: 'rejected' },
+      confirmedRevision: { id: counted.confirmedRevision!.id, status: 'confirmed' },
+    });
+    expect(await countedRevision(g.id)).toBe(counted.confirmedRevision!.id);
+  });
+
+  it('records one decision when two commissioners decide at once', async () => {
+    const t = await table();
+    await promoted(t, t.cy);
+    const g = await confirmedAwaitingReview(t);
+    const rid = g.openRevision!.id;
+
+    const responses = await queuedOn(g.id, () => [
+      override(t, t.ana.caller, g.id, rid, { decision: 'approve' }),
+      override(t, t.cy.caller, g.id, rid, { decision: 'reject' }),
+    ]);
+
+    expect(responses.map((r) => r.status).toSorted()).toEqual([200, 409]);
+    const loser = responses.find((r) => r.status === 409)!;
+    expect((await errorOf(loser)).code).toBe('NOT_AWAITING_REVIEW');
+    expect(await rows('audit_events')).toBe(1);
+  });
+
+  it('confirms the game once when an approval races the last confirmation', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const rid = g.openRevision!.id;
+
+    const results = await raceOn(g.id, () => [
+      override(t, t.ana.caller, g.id, rid, { decision: 'approve' }),
+      confirm(t, t.di.caller, g.id, rid),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    // Whichever ran second completed the revision, so it reports the game as counting.
+    expect(results.map((r) => r.game.status).toSorted()).toEqual(['confirmed', 'pending']);
+    expect(await countedRevision(g.id)).toBe(rid);
+    expect(await rows('counted_results')).toBe(4);
+    expect(await rows('audit_events')).toBe(1);
+  });
+});
+
+describe('override request emails', () => {
+  // A table whose setup mail is already sent and forgotten, with Ed as a second commissioner
+  // who plays in none of these games.
+  async function quietTable(): Promise<Table & { ed: Player }> {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const res = await call('POST', `/api/leagues/${t.leagueId}/members/${ed.membershipId}/role`, {
+      as: t.commissioner,
+      body: { role: 'commissioner' },
+    });
+    expect(res.status).toBe(200);
+    await drain();
+    sent = [];
+    return { ...t, ed };
+  }
+
+  const SUBJECT = 'A game is waiting for commissioner review';
+  const reviewMail = () => sent.filter((m) => m.subject === SUBJECT);
+  const recipients = () =>
+    reviewMail()
+      .map((m) => m.to[0]!.address)
+      .toSorted();
+
+  it('mails every commissioner when a game is sent for review, whether or not they played', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com', 'ed@example.com']);
+  });
+
+  it('names the author and links into the app, with no scores or ids', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    const stored = await api.db.execute<{ params: unknown }>(
+      sql`select params from email_outbox where template = 'override_requested'`,
+    );
+    await drain();
+
+    // Points, sinks, and every id contain digits; these display names and APP_ORIGIN don't.
+    expect(stored).toHaveLength(2);
+    for (const { params } of stored) expect(JSON.stringify(params)).not.toMatch(/\d/);
+    for (const mail of reviewMail()) {
+      expect(mail.text).toContain('Bo recorded a game that breaks the league rules');
+      expect(mail.text).toContain(`${APP_ORIGIN}/`);
+      expect(`${mail.subject}\n${mail.text}`).not.toMatch(/\d/);
+      expect(mail.text).not.toContain('@');
+    }
+  });
+
+  it('sends a commissioner who played one mail to confirm and one to review, and no more', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+
+    const toAna = sent.filter((m) => m.to[0]!.address === 'ana@example.com');
+    expect(toAna.map((m) => m.subject).toSorted()).toEqual([
+      'A game is waiting for commissioner review',
+      'A new game is waiting for your confirmation',
+    ]);
+  });
+
+  it('does not mail the commissioner who sent their own game for review', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+
+    expect(recipients()).toEqual(['ed@example.com']);
+  });
+
+  it('mails the commissioners when a correction is sent for review', async () => {
+    const t = await quietTable();
+    const g = await submitted(t, t.bo.caller, game(t));
+    await drain();
+    sent = [];
+
+    await corrected(
+      t,
+      t.di.caller,
+      g.id,
+      correction(t, g, { ...correctedMarginTooSmall(t), requestOverride: true }),
+    );
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com', 'ed@example.com']);
+    for (const mail of reviewMail()) expect(mail.text).toContain('Di recorded a game');
+  });
+
+  it('does not mail a commissioner who opted out', async () => {
+    const t = await quietTable();
+    await api.db.execute(
+      sql`update memberships set email_notifications = false where id = ${t.ed.membershipId}`,
+    );
+
+    await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com']);
+  });
+
+  it('does not mail the commissioners about a game that breaks no rule', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.bo.caller, game(t, { requestOverride: true }));
+    await drain();
+
+    expect(recipients()).toEqual([]);
+  });
+
+  it('does not mail the commissioners again when a submission sent for review is retried', async () => {
+    const t = await quietTable();
+    const body = marginTooSmall(t, { requestOverride: true });
+    await submitted(t, t.bo.caller, body);
+
+    const retry = await submit(t, t.bo.caller, body);
+    await drain();
+
+    expect(retry.status).toBe(200);
+    expect(recipients()).toEqual(['ana@example.com', 'ed@example.com']);
+  });
+
+  it('does not mail anyone about a decision', async () => {
+    const t = await quietTable();
+    const g = await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+    sent = [];
+
+    await decided(t, g, 'approve');
+    await drain();
+
+    expect(sent).toEqual([]);
+  });
+});
+
 describe('revision emails', () => {
   // A table whose setup mail (member-pending notes to Ana) is already sent and forgotten, so
   // a test sees only what its games enqueue.
@@ -2431,7 +3093,15 @@ describe('revision emails', () => {
     await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
     await drain();
 
-    expect(recipients()).toEqual(['ana@example.com', 'cy@example.com', 'di@example.com']);
+    // Ana, a commissioner, is also asked to review it; that mail is covered on its own.
+    const toConfirm = sent.filter(
+      (m) => m.subject === 'A new game is waiting for your confirmation',
+    );
+    expect(toConfirm.map((m) => m.to[0]!.address).toSorted()).toEqual([
+      'ana@example.com',
+      'cy@example.com',
+      'di@example.com',
+    ]);
   });
 
   it('does not mail anyone again when a submission is retried', async () => {

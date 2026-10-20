@@ -5,6 +5,7 @@ import {
   DisplayName,
   ForceConfirmBody,
   nameKey,
+  OverrideDecisionBody,
   PartnershipStatsQuery,
   playerLines,
   PlayerStatsQuery,
@@ -365,6 +366,21 @@ describe('ForceConfirmBody', () => {
     ['an unknown key', { membershipIds: [ids[0]], kind: 'player' }],
   ])('rejects %s', (_label, body) => {
     expect(ForceConfirmBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('OverrideDecisionBody', () => {
+  it.each(['approve', 'reject'])('accepts %j', (decision) => {
+    expect(OverrideDecisionBody.safeParse({ decision }).success).toBe(true);
+  });
+
+  it.each([
+    ['another decision', { decision: 'approved' }],
+    ['a decision in upper case', { decision: 'APPROVE' }],
+    ['a missing decision', {}],
+    ['an unknown key', { decision: 'approve', reason: 'close enough' }],
+  ])('rejects %s', (_label, body) => {
+    expect(OverrideDecisionBody.safeParse(body).success).toBe(false);
   });
 });
 

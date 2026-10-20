@@ -290,6 +290,8 @@ export const gameRevisions = pgTable(
     // checkRules against the game's rules snapshot; empty means the revision conforms.
     ruleViolations: jsonb('rule_violations').$type<RuleViolation[]>().notNull(),
     overrideStatus: text('override_status', { enum: ['requested', 'approved', 'rejected'] }),
+    // The commissioner who approved or rejected the review; the decision is also audited.
+    overrideBy: uuid('override_by').references(() => memberships.id),
     createdAt: ts('created_at').notNull(),
   },
   (t) => [
@@ -303,6 +305,10 @@ export const gameRevisions = pgTable(
     check(
       'game_revisions_override_status_valid',
       sql`${t.overrideStatus} in ('requested', 'approved', 'rejected')`,
+    ),
+    check(
+      'game_revisions_decided_has_override_by',
+      sql`coalesce(${t.overrideStatus} in ('approved', 'rejected'), false) = (${t.overrideBy} is not null)`,
     ),
   ],
 );

@@ -8,6 +8,7 @@ import {
   type GameRevision,
   INBOX_MAX,
   LeagueRules,
+  type OverrideDecisionBody,
   type PlayerLine,
   playerLines,
   type RuleViolation,
@@ -15,7 +16,7 @@ import {
   type Side,
   type SubmitGameBody,
 } from '@beer-die/core';
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, max } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, max, ne } from 'drizzle-orm';
 import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
@@ -30,15 +31,22 @@ import {
 } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
 import { enqueueEmail } from '../mail/outbox.ts';
-import { GAME_REVISION, gameRevisionParams } from '../mail/templates.ts';
+import {
+  GAME_REVISION,
+  gameRevisionParams,
+  OVERRIDE_REQUESTED,
+  overrideRequestedParams,
+} from '../mail/templates.ts';
 import { recordAudit } from './audit.ts';
 import { type Actor, assertCommissioner } from './membership.ts';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-// Every submission or correction mails up to three players, so this bounds the mail one
-// member can cause. Far above what a real league night needs.
+// Every submission or correction mails up to three players and, when sent for review, the
+// league's commissioners, so no one gets more than two mails per write (a commissioner who
+// played) and this bounds the mail one member can cause. Far above what a real league night
+// needs.
 export const GAME_WRITES_PER_HOUR = 30;
 
 type Deps = { db: Db; clock: Clock };
@@ -74,6 +82,13 @@ const windowClosed = (action: string) =>
 
 const staleRevision = (action: string) =>
   new ApiError(409, 'STALE_REVISION', `This version of the game can no longer be ${action}`);
+
+const notAwaitingReview = () =>
+  new ApiError(
+    409,
+    'NOT_AWAITING_REVIEW',
+    'This version of the game is not waiting for a commissioner to review it',
+  );
 
 // A canonical form of everything but the idempotency key: fixed field order, lowercase ids,
 // and a normalized time, so a retried draft hashes the same however its JSON was laid out.
@@ -241,7 +256,7 @@ async function limitGameWrites(deps: WriteDeps, actor: Actor, now: Date): Promis
 // Stores a checked result as the game's open revision, with the author's confirmation:
 // recording a result counts as confirming it. A result that breaks the rules awaits a
 // commissioner's review; nothing carries over from an earlier revision. The other players
-// are told by email.
+// are told by email, and so, for a review, are the commissioners.
 async function openRevision(
   tx: Tx,
   actor: Actor,
@@ -290,6 +305,7 @@ async function openRevision(
     appOrigin,
     now,
   });
+  if (result.ruleViolations.length > 0) await mailCommissioners(tx, actor, { appOrigin, now });
 }
 
 // Queues a note for each of the revision's other players who takes email (SPEC §3.9): the
@@ -323,6 +339,37 @@ async function mailOtherPlayers(
   for (const seat of seats) {
     if (seat.id === actor.id || !seat.emailNotifications) continue;
     await enqueueEmail(tx, { userId: seat.userId, template: GAME_REVISION, params, now });
+  }
+}
+
+// Queues a review request for each commissioner who takes email (SPEC §3.5), except the
+// author, who asked for it: the author's name and a link into the app, never the scores or
+// the rules broken. Like mailOtherPlayers, it is enqueued in the write's transaction.
+async function mailCommissioners(
+  tx: Tx,
+  actor: Actor,
+  { appOrigin, now }: { appOrigin: string; now: Date },
+): Promise<void> {
+  const [author] = await tx
+    .select({ displayName: memberships.displayName })
+    .from(memberships)
+    .where(and(eq(memberships.id, actor.id), eq(memberships.leagueId, actor.leagueId)));
+  if (!author) throw new Error('author of a checked result is missing');
+  const commissioners = await tx
+    .select({ userId: memberships.userId })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.leagueId, actor.leagueId),
+        eq(memberships.role, 'commissioner'),
+        eq(memberships.status, 'approved'),
+        eq(memberships.emailNotifications, true),
+        ne(memberships.id, actor.id),
+      ),
+    );
+  const params = overrideRequestedParams(author.displayName, `${appOrigin}/`);
+  for (const { userId } of commissioners) {
+    await enqueueEmail(tx, { userId, template: OVERRIDE_REQUESTED, params, now });
   }
 }
 
@@ -412,7 +459,14 @@ export async function correctGame(
     if (!roster.has(actor.id)) {
       throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can correct it');
     }
-    if (base.status === 'expired') throw windowClosed('correct');
+    // A rejected revision stays the open one until a correction supersedes it, so one that
+    // no longer is had its window close.
+    if (
+      base.status === 'expired' ||
+      (base.status === 'rejected' && game.openRevisionId !== baseId)
+    ) {
+      throw windowClosed('correct');
+    }
     const reopening = game.openRevisionId === null && game.confirmedRevisionId === baseId;
     if (!reopening && game.openRevisionId !== baseId) throw staleRevision('corrected');
     if (reopening) await reopenGame(tx, actor, game, now);
@@ -467,6 +521,18 @@ async function lockGame(tx: Tx, actor: Actor, gameId: string, now: Date): Promis
     .for('update');
   if (!game) throw notFound();
   return settleExpired(tx, game, now);
+}
+
+// A commissioner action's second role check, made under the game lock. The role was read
+// before the lock wait; FOR SHARE re-reads it as committed since, and holds it until this
+// commits.
+async function recheckCommissioner(tx: Tx, actor: Actor): Promise<void> {
+  const [self] = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')))
+    .for('share');
+  assertCommissioner({ ...actor, role: self?.role ?? 'member' });
 }
 
 // Materializes a lapsed window: the open revision expires, and so does a game that never
@@ -665,14 +731,7 @@ export async function forceConfirm(
 
   return deps.db.transaction(async (tx) => {
     const game = await lockGame(tx, actor, gameId, now);
-    // The role was read before the lock wait. FOR SHARE re-reads it as committed since, and
-    // holds it until this commits.
-    const [self] = await tx
-      .select({ role: memberships.role })
-      .from(memberships)
-      .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')))
-      .for('share');
-    assertCommissioner({ ...actor, role: self?.role ?? 'member' });
+    await recheckCommissioner(tx, actor);
 
     const [revision] = await tx
       .select({ status: gameRevisions.status })
@@ -747,6 +806,70 @@ export async function forceConfirm(
       );
     }
     await settleRevision(tx, game, now);
+    return loadGame(tx, game.id);
+  });
+}
+
+// A commissioner decides the review of the rule-breaking revision they were shown (SPEC §3.5).
+// Approving lets it confirm once all four players have, in either order; rejecting means it
+// never counts, though its players can still correct it while the window runs. The decision
+// is audited, flagged when the commissioner played in the game, and final: repeating it
+// returns the game unchanged, whatever has happened to it since, and the other decision is
+// refused.
+export async function decideOverride(
+  deps: Deps,
+  actor: Actor,
+  gameId: string,
+  revisionId: string,
+  body: OverrideDecisionBody,
+): Promise<Game> {
+  assertCommissioner(actor);
+  const now = deps.clock.now();
+  // Path ids are matched case-insensitively; Postgres returns them in lower case.
+  const rid = revisionId.toLowerCase();
+  const outcome = body.decision === 'approve' ? 'approved' : 'rejected';
+
+  return deps.db.transaction(async (tx) => {
+    const game = await lockGame(tx, actor, gameId, now);
+    await recheckCommissioner(tx, actor);
+
+    const [revision] = await tx
+      .select({ status: gameRevisions.status, overrideStatus: gameRevisions.overrideStatus })
+      .from(gameRevisions)
+      .where(and(eq(gameRevisions.id, rid), eq(gameRevisions.gameId, game.id)));
+    if (!revision) throw notFound();
+    if (revision.overrideStatus === outcome) return loadGame(tx, game.id);
+    if (revision.status === 'expired') throw windowClosed('review');
+    if (revision.overrideStatus !== 'requested') throw notAwaitingReview();
+    if (revision.status !== 'open' || game.openRevisionId !== rid) {
+      throw staleRevision('reviewed');
+    }
+
+    await tx
+      .update(gameRevisions)
+      .set({
+        overrideStatus: outcome,
+        overrideBy: actor.id,
+        ...(outcome === 'rejected' && { status: 'rejected' as const }),
+      })
+      .where(eq(gameRevisions.id, rid));
+    const [seat] = await tx
+      .select({ id: revisionPlayers.id })
+      .from(revisionPlayers)
+      .where(and(eq(revisionPlayers.revisionId, rid), eq(revisionPlayers.membershipId, actor.id)));
+    await recordAudit(
+      tx,
+      actor,
+      {
+        action: 'game.override_decided',
+        targetType: 'game',
+        targetId: game.id,
+        actorWasParticipant: seat !== undefined,
+        details: { revisionId: rid, decision: body.decision },
+      },
+      now,
+    );
+    if (outcome === 'approved') await settleRevision(tx, game, now);
     return loadGame(tx, game.id);
   });
 }

@@ -153,7 +153,9 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
       {revision.ruleViolations.length > 0 && (
         <View testID="inbox-violations">
           <Text style={styles.error}>
-            This result breaks the league rules, so it counts only if a commissioner approves it:
+            {revision.overrideStatus === 'approved'
+              ? 'This result breaks the league rules, but a commissioner approved it:'
+              : 'This result breaks the league rules, so it counts only if a commissioner approves it:'}
           </Text>
           {revision.ruleViolations.map((v) => (
             <Text key={v.code} style={styles.error}>

@@ -41,6 +41,14 @@ function describeEvent(event: AuditEvent): { summary: string; lines: string[] } 
       };
     case 'game.confirmation_forced':
       return { summary: `confirmed a game on behalf of ${event.player.displayName}`, lines: [] };
+    case 'game.override_decided':
+      return {
+        summary:
+          event.details.decision === 'approve'
+            ? 'approved a game that breaks the league rules'
+            : 'rejected a game that breaks the league rules',
+        lines: [],
+      };
   }
 }
 
