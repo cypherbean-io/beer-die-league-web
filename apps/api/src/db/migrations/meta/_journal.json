@@ -64,6 +64,13 @@
       "when": 1792361263803,
       "tag": "0008_counted_results_partner",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792462376324,
+      "tag": "0009_outbox_claim_indexes",
+      "breakpoints": true
     }
   ]
 }

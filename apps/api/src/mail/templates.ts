@@ -7,6 +7,7 @@ import { open, seal } from '../crypto.ts';
 
 export const SIGN_IN_CODE = 'sign_in_code';
 export const MEMBER_PENDING = 'member_pending';
+export const GAME_REVISION = 'game_revision';
 
 const SignInCodeParams = z.strictObject({ code: z.string(), expiresAt: z.iso.datetime() });
 
@@ -24,6 +25,22 @@ export function memberPendingParams(displayName: string, link: string) {
   return { displayName, link };
 }
 
+// Sent to a game's other players when a revision opens. The author's name, what they did,
+// and a link only: no scores, no game id.
+const GameRevisionParams = z.strictObject({
+  authorName: DisplayName,
+  action: z.enum(['submitted', 'corrected']),
+  link: z.url({ protocol: /^https?$/ }),
+});
+
+export function gameRevisionParams(
+  authorName: string,
+  action: 'submitted' | 'corrected',
+  link: string,
+) {
+  return { authorName, action, link };
+}
+
 export type Rendered = { subject: string; text: string };
 export type Render =
   Rendered | { drop: 'BAD_PARAMS' | 'EXPIRED' | 'UNREADABLE' | 'UNKNOWN_TEMPLATE' };
@@ -35,7 +52,26 @@ export function renderEmail(
 ): Render {
   if (template === SIGN_IN_CODE) return renderSignInCode(params, ctx);
   if (template === MEMBER_PENDING) return renderMemberPending(params);
+  if (template === GAME_REVISION) return renderGameRevision(params);
   return { drop: 'UNKNOWN_TEMPLATE' };
+}
+
+function renderGameRevision(params: unknown): Render {
+  const parsed = GameRevisionParams.safeParse(params);
+  if (!parsed.success) return { drop: 'BAD_PARAMS' };
+  const { authorName, action, link } = parsed.data;
+  return {
+    subject:
+      action === 'submitted'
+        ? 'A new game is waiting for your confirmation'
+        : 'A corrected game is waiting for your confirmation',
+    text: [
+      `${authorName} ${action} a game with you.`,
+      '',
+      `Check the result, then confirm it or propose a correction: ${link}`,
+      '',
+    ].join('\n'),
+  };
 }
 
 function renderMemberPending(params: unknown): Render {

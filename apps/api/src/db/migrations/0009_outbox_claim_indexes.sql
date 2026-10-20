@@ -1,0 +1,3 @@
+DROP INDEX "email_outbox_pending_idx";--> statement-breakpoint
+CREATE INDEX "email_outbox_pending_codes_idx" ON "email_outbox" USING btree ("next_attempt_at") WHERE "email_outbox"."sent_at" is null and "email_outbox"."attempts" < 5 and "email_outbox"."template" = 'sign_in_code';--> statement-breakpoint
+CREATE INDEX "email_outbox_pending_mail_idx" ON "email_outbox" USING btree ("next_attempt_at") WHERE "email_outbox"."sent_at" is null and "email_outbox"."attempts" < 5 and "email_outbox"."template" <> 'sign_in_code';
