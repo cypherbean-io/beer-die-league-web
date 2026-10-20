@@ -11,6 +11,8 @@ import {
   PartnershipStatsQuery,
   playerLines,
   PlayerStatsQuery,
+  ProposeTeamBody,
+  RosterBody,
   RulesBody,
   SettingsBody,
   StandingsConfig,
@@ -450,6 +452,61 @@ describe('StandingsConfigBody', () => {
     ['an unknown key', { minGames: 3, tiebreak: 'coin' }],
   ])('rejects %s', (_label, body) => {
     expect(StandingsConfigBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('ProposeTeamBody', () => {
+  const partnerId = '0199f3a2-5c1e-7a00-8000-00000000000b';
+
+  it.each([
+    ['a plain name', 'Sharks', 'Sharks'],
+    ['an apostrophe', "Bo's Bombers", "Bo's Bombers"],
+    ['40 characters', 'a'.repeat(40), 'a'.repeat(40)],
+    ['surrounding and doubled spaces', '  Table   Kings ', 'Table Kings'],
+    ['a compatibility form, normalized', 'Ｓｈａｒｋｓ', 'Sharks'],
+    ['letters from one other alphabet', 'Акулы', 'Акулы'],
+  ])('accepts %s', (_label, name, stored) => {
+    expect(ProposeTeamBody.parse({ name, partnerId })).toEqual({ name: stored, partnerId });
+  });
+
+  it.each([
+    ['an empty name', { name: '', partnerId }],
+    ['only spaces', { name: '   ', partnerId }],
+    ['41 characters', { name: 'a'.repeat(41), partnerId }],
+    ['a newline', { name: 'Table\nKings', partnerId }],
+    ['a right-to-left override', { name: 'Sharks \u202E', partnerId }],
+    ['a zero-width space', { name: 'Sha\u200Brks', partnerId }],
+    ['Latin and Cyrillic letters mixed', { name: '\u0422able Kings', partnerId }],
+    ['a partner id that is not a UUID', { name: 'Sharks', partnerId: 'bo' }],
+    ['a missing partner', { name: 'Sharks' }],
+    ['a missing name', { partnerId }],
+    ['an unknown key', { name: 'Sharks', partnerId, status: 'approved' }],
+  ])('rejects %s', (_label, body) => {
+    expect(ProposeTeamBody.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('RosterBody', () => {
+  const ids = [
+    '0199f3a2-5c1e-7a00-8000-00000000000a',
+    '0199f3a2-5c1e-7a00-8000-00000000000b',
+    '0199f3a2-5c1e-7a00-8000-00000000000c',
+  ] as const;
+
+  it('accepts two different players', () => {
+    expect(RosterBody.safeParse({ membershipIds: [ids[0], ids[1]] }).success).toBe(true);
+  });
+
+  it.each([
+    ['one player', { membershipIds: [ids[0]] }],
+    ['three players', { membershipIds: [...ids] }],
+    ['a player listed twice', { membershipIds: [ids[0], ids[0]] }],
+    ['a player listed twice in different case', { membershipIds: [ids[0], ids[0].toUpperCase()] }],
+    ['an id that is not a UUID', { membershipIds: [ids[0], 'cy'] }],
+    ['a missing list', {}],
+    ['an unknown key', { membershipIds: [ids[0], ids[1]], name: 'Sharks' }],
+  ])('rejects %s', (_label, body) => {
+    expect(RosterBody.safeParse(body).success).toBe(false);
   });
 });
 

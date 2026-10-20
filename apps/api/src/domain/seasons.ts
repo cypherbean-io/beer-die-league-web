@@ -109,7 +109,7 @@ async function lockSeasonForEdit(tx: Tx, actor: Actor, seasonId: string): Promis
 // window has lapsed count as closed, as they do for reads, and their expiry is recorded before
 // the season finalizes, so a write that was waiting on one then finds it closed. SKIP LOCKED
 // never waits on a game while the season is held, which keeps the lock order intact.
-async function finalizeIfSettled(tx: Tx, season: SeasonRow, now: Date): Promise<SeasonRow> {
+export async function finalizeIfSettled(tx: Tx, season: SeasonRow, now: Date): Promise<SeasonRow> {
   if (season.status !== 'ended') return season;
   const openInSeason = and(eq(games.seasonId, season.id), isNotNull(games.openRevisionId));
   const free = await tx

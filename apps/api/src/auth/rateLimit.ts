@@ -4,7 +4,14 @@ import type { Db } from '../db/client.ts';
 import { rateLimits } from '../db/schema.ts';
 
 export type RateLimitKind =
-  'email' | 'ip' | 'verify-email' | 'verify-ip' | 'join' | 'game-write' | 'season-create';
+  | 'email'
+  | 'ip'
+  | 'verify-email'
+  | 'verify-ip'
+  | 'join'
+  | 'game-write'
+  | 'season-create'
+  | 'team-propose';
 
 // The stored key is an HMAC, so neither the email nor the IP is kept in the clear.
 export function rateLimitKey(secret: string, kind: RateLimitKind, value: string): string {

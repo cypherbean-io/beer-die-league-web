@@ -68,6 +68,21 @@ function describeEvent(event: AuditEvent): { summary: string; lines: string[] } 
         ],
       };
     }
+    case 'team.approved':
+      return { summary: `approved ${event.team.name} for ${event.season.name}`, lines: [] };
+    case 'team.rejected':
+      return {
+        summary: `rejected ${event.team?.name ?? 'a proposed team'} for ${event.season.name}`,
+        lines: [],
+      };
+    case 'team.roster_updated': {
+      const names = (players: Array<{ displayName: string }>) =>
+        players.map((p) => p.displayName).join(' and ');
+      return {
+        summary: `changed the roster of ${event.team.name} in ${event.season.name}`,
+        lines: [`${names(event.roster.before)} → ${names(event.roster.after)}`],
+      };
+    }
   }
 }
 
@@ -108,7 +123,11 @@ function EventList({ leagueId }: { leagueId: string }) {
           <View key={event.id} style={styles.entry} testID="audit-event">
             <Text>
               <Text style={styles.name}>{event.actor.displayName}</Text> {summary}
-              {event.actorWasParticipant ? ' (played in this game)' : ''}
+              {event.actorWasParticipant
+                ? event.targetType === 'team'
+                  ? ' (on this team)'
+                  : ' (played in this game)'
+                : ''}
             </Text>
             {lines.map((line) => (
               <Text key={line} style={styles.change}>
