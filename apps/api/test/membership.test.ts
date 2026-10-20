@@ -734,6 +734,13 @@ const LEAGUE_ROUTES: Route[] = [
     commissioner: true,
     body: { membershipIds: [randomUUID()] },
   },
+  // Y's commissioner gets 409 for the open game, which breaks no rule; X's gets 404.
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/games/:gid/revisions/:rid/override',
+    commissioner: true,
+    body: { decision: 'approve' },
+  },
   { method: 'GET', path: '/api/leagues/:leagueId/inbox', commissioner: false },
   {
     method: 'GET',

@@ -1,0 +1,3 @@
+ALTER TABLE "game_revisions" ADD COLUMN "override_by" uuid;--> statement-breakpoint
+ALTER TABLE "game_revisions" ADD CONSTRAINT "game_revisions_override_by_memberships_id_fk" FOREIGN KEY ("override_by") REFERENCES "public"."memberships"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "game_revisions" ADD CONSTRAINT "game_revisions_decided_has_override_by" CHECK (coalesce("game_revisions"."override_status" in ('approved', 'rejected'), false) = ("game_revisions"."override_by" is not null));

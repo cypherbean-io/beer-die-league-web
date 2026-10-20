@@ -3,12 +3,19 @@ import {
   EmptyBody,
   ForceConfirmBody,
   type GameResponse,
+  OverrideDecisionBody,
   SubmitGameBody,
 } from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
 import type { LeagueEnv } from '../auth/middleware.ts';
-import { confirmRevision, correctGame, forceConfirm, submitGame } from '../domain/games.ts';
+import {
+  confirmRevision,
+  correctGame,
+  decideOverride,
+  forceConfirm,
+  submitGame,
+} from '../domain/games.ts';
 import { idParam, readJson } from '../http.ts';
 
 // Mounted inside leagueRoutes, which has already resolved the caller's membership.
@@ -44,6 +51,18 @@ export function gameRoutes(deps: AppDeps) {
       .post('/games/:gid/revisions/:rid/force-confirm', async (c) => {
         const body = await readJson(c, ForceConfirmBody);
         const game = await forceConfirm(
+          deps,
+          c.get('membership')!,
+          idParam(c, 'gid'),
+          idParam(c, 'rid'),
+          body,
+        );
+        return c.json({ game } satisfies GameResponse);
+      })
+      // A commissioner approves or rejects the rule-breaking revision they displayed.
+      .post('/games/:gid/revisions/:rid/override', async (c) => {
+        const body = await readJson(c, OverrideDecisionBody);
+        const game = await decideOverride(
           deps,
           c.get('membership')!,
           idParam(c, 'gid'),

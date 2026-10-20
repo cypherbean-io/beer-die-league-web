@@ -189,6 +189,16 @@ export const ForcedConfirmationDetails = z.strictObject({
   membershipId: z.uuid(),
 });
 
+// A commissioner's decision on a rule-breaking revision sent for review. Approving lets it
+// confirm once all four players have; rejecting means it never counts.
+export const OverrideDecision = z.enum(['approve', 'reject']);
+
+// What the log stores when a commissioner decides a review.
+const OverrideDecidedDetails = z.strictObject({
+  revisionId: z.uuid(),
+  decision: OverrideDecision,
+});
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -211,6 +221,12 @@ export const AuditEvent = z.discriminatedUnion('action', [
     details: ForcedConfirmationDetails,
     // The player confirmed for, named when the log is read rather than stored in `details`.
     player: z.strictObject({ membershipId: z.uuid(), displayName: z.string() }),
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('game.override_decided'),
+    targetType: z.literal('game'),
+    details: OverrideDecidedDetails,
   }),
 ]);
 export type AuditEvent = z.infer<typeof AuditEvent>;
@@ -332,6 +348,10 @@ export const ForceConfirmBody = z.strictObject({
     ),
 });
 export type ForceConfirmBody = z.input<typeof ForceConfirmBody>;
+
+// A commissioner's decision on a rule-breaking revision sent for review.
+export const OverrideDecisionBody = z.strictObject({ decision: OverrideDecision });
+export type OverrideDecisionBody = z.input<typeof OverrideDecisionBody>;
 
 type SideLines = { players: Array<Omit<PlayerLine, 'side'>> };
 
