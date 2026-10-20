@@ -241,6 +241,9 @@ export const games = pgTable(
     confirmedRevisionId: uuid('confirmed_revision_id').references(
       (): AnyPgColumn => gameRevisions.id,
     ),
+    // When the game first counted, also set only by settleRevision. A reopened revision that
+    // confirms keeps it, so an exhibition game's correction window never restarts.
+    confirmedAt: ts('confirmed_at'),
     // Set at first submission (or when a confirmed game is reopened); corrections keep it.
     windowExpiresAt: ts('window_expires_at'),
     rulesSnapshot: jsonb('rules_snapshot').$type<Rules>().notNull(),
@@ -259,6 +262,10 @@ export const games = pgTable(
     check(
       'games_confirmed_has_revision',
       sql`(${t.status} = 'confirmed') = (${t.confirmedRevisionId} is not null)`,
+    ),
+    check(
+      'games_confirmed_has_time',
+      sql`(${t.confirmedRevisionId} is not null) = (${t.confirmedAt} is not null)`,
     ),
   ],
 );

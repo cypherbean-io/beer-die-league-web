@@ -294,9 +294,10 @@ export const SubmitGameBody = z.strictObject({
 });
 export type SubmitGameBody = z.input<typeof SubmitGameBody>;
 
-// A corrected result for a pending game, which becomes its new open revision. The game keeps
-// its kind. `baseRevisionId` is the open revision the author was shown; if the game has
-// moved on since, the correction is refused, so nobody overwrites numbers they haven't seen.
+// A corrected result, which becomes the game's new open revision. The game keeps its kind.
+// `baseRevisionId` is the revision the author was shown: the open one, or, for a confirmed
+// game with nothing open, the confirmed one, which reopens the game. If the game has moved on
+// since, the correction is refused, so nobody overwrites numbers they haven't seen.
 export const CorrectGameBody = z.strictObject({
   baseRevisionId: z.uuid(),
   ...resultFields,
@@ -369,7 +370,8 @@ export const Game = z.strictObject({
   status: GameStatus,
   // The rules at first submission. Every revision of the game is checked against these.
   rulesSnapshot: LeagueRules,
-  // Set at first submission and not moved by corrections. Null when nothing is open.
+  // Set at first submission, or when a confirmed game is reopened, and not moved by
+  // corrections. Null when nothing is open.
   windowExpiresAt: z.iso.datetime().nullable(),
   // The revision awaiting confirmation, if any.
   openRevision: GameRevision.nullable(),

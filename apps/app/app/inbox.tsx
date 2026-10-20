@@ -123,14 +123,18 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
     },
   });
   const author = revision.players.find((p) => p.membershipId === revision.createdBy);
+  const authorName = author?.displayName ?? 'another player';
+  // A reopened game: a correction of a result that counts, and keeps counting meanwhile.
+  const reopened = game.confirmedRevision !== null;
 
   return (
     <View style={styles.game} testID="inbox-game">
       <Text style={styles.muted}>Played {new Date(revision.playedAt).toLocaleString()}</Text>
       {revision.number > 1 && (
         <Text testID="inbox-corrected" style={styles.muted}>
-          Corrected by {author?.displayName ?? 'another player'}, so earlier confirmations were
-          reset.
+          {reopened
+            ? `${authorName} proposed a correction to this confirmed game. The confirmed result keeps counting until all four players confirm the correction.`
+            : `Corrected by ${authorName}, so earlier confirmations were reset.`}
         </Text>
       )}
       {(['A', 'B'] as const).map((side) => (
@@ -160,7 +164,8 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
       )}
       {game.windowExpiresAt !== null && (
         <Text style={styles.muted}>
-          Confirm by {new Date(game.windowExpiresAt).toLocaleString()}, or it won’t count.
+          Confirm by {new Date(game.windowExpiresAt).toLocaleString()}, or{' '}
+          {reopened ? 'the correction lapses and the confirmed result stands.' : 'it won’t count.'}
         </Text>
       )}
       <Button
