@@ -30,6 +30,9 @@ import {
   type StandingsConfigBody,
   type StatsScope,
   type SubmitGameBody,
+  type Team,
+  TeamResponse,
+  TeamsResponse,
   VerifyCodeResponse,
 } from '@beer-die/core';
 
@@ -58,7 +61,7 @@ async function failure(res: Response): Promise<ApiRequestError> {
 // Writes are always JSON: the API refuses anything else as a CSRF defence, even a bodiless
 // DELETE.
 function sendJson(
-  method: 'POST' | 'PATCH' | 'DELETE',
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<Response> {
@@ -284,4 +287,51 @@ export async function updateStandingsConfig(
   const res = await sendJson('PATCH', seasonPath(leagueId, seasonId, 'standings-config'), patch);
   if (!res.ok) throw await failure(res);
   return SeasonResponse.parse(await res.json()).season;
+}
+
+// Every team in the season, by name.
+export async function getTeams(leagueId: string, seasonId: string): Promise<Team[]> {
+  return (await getJson(seasonPath(leagueId, seasonId, 'teams'), TeamsResponse)).teams;
+}
+
+// Puts me and my partner on a new team, which waits for my partner to accept.
+export async function proposeTeam(
+  leagueId: string,
+  seasonId: string,
+  name: string,
+  partnerId: string,
+): Promise<Team> {
+  const res = await postJson(seasonPath(leagueId, seasonId, 'teams'), { name, partnerId });
+  if (!res.ok) throw await failure(res);
+  return TeamResponse.parse(await res.json()).team;
+}
+
+export type TeamAction = 'accept' | 'withdraw' | 'approve' | 'reject';
+
+export async function actOnTeam(
+  leagueId: string,
+  teamId: string,
+  action: TeamAction,
+): Promise<Team> {
+  const res = await postJson(
+    `${leaguePath(leagueId)}/teams/${encodeURIComponent(teamId)}/${action}`,
+    {},
+  );
+  if (!res.ok) throw await failure(res);
+  return TeamResponse.parse(await res.json()).team;
+}
+
+// Commissioners only: an approved team's two players.
+export async function setTeamRoster(
+  leagueId: string,
+  teamId: string,
+  membershipIds: [string, string],
+): Promise<Team> {
+  const res = await sendJson(
+    'PUT',
+    `${leaguePath(leagueId)}/teams/${encodeURIComponent(teamId)}/roster`,
+    { membershipIds },
+  );
+  if (!res.ok) throw await failure(res);
+  return TeamResponse.parse(await res.json()).team;
 }

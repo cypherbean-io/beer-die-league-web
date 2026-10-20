@@ -6,7 +6,7 @@ import {
   StandingsMetric,
 } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Redirect, Stack } from 'expo-router';
+import { Link, Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
@@ -148,6 +148,13 @@ function SeasonCard({ leagueId, season, commissioner }: CardProps) {
           .filter(Boolean)
           .join(', ')}
       </Text>
+      <Link
+        href={{ pathname: '/teams/[sid]', params: { sid: season.id } }}
+        testID="season-teams-link"
+        style={styles.link}
+      >
+        Teams
+      </Link>
       <Text>Ranked by {describeOrder(season.standingsConfig.order)}</Text>
       <Text>Minimum games to be ranked: {season.standingsConfig.minGames}</Text>
 
@@ -303,5 +310,6 @@ const styles = StyleSheet.create({
   wrap: { flexWrap: 'wrap' },
   grow: { flex: 1 },
   muted: { color: '#555' },
+  link: { color: '#1d4ed8', fontSize: 16 },
   error: { color: '#b91c1c' },
 });

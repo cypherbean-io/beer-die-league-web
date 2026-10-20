@@ -264,6 +264,82 @@ export const seasons = pgTable(
   ],
 );
 
+// A team in one season (SPEC §3.7), moved through its statuses only by domain/teams.ts: a
+// member proposes it with a partner (proposed), the partner accepts (accepted), and a
+// commissioner approves it (approved); until then it can be withdrawn or rejected. The
+// proposer and partner are the pair it was proposed with; an approved team's players are its
+// roster, which a commissioner can change. `name_key` (NFKC + lowercase, derived by the server)
+// keeps the names of a season's live teams unique.
+export const seasonTeams = pgTable(
+  'season_teams',
+  {
+    id: id(),
+    seasonId: uuid('season_id')
+      .notNull()
+      .references(() => seasons.id),
+    name: text('name').notNull(),
+    nameKey: text('name_key').notNull(),
+    status: text('status', {
+      enum: ['proposed', 'accepted', 'approved', 'rejected', 'withdrawn'],
+    }).notNull(),
+    proposedBy: uuid('proposed_by')
+      .notNull()
+      .references(() => memberships.id),
+    partnerId: uuid('partner_id')
+      .notNull()
+      .references(() => memberships.id),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [
+    // The target of team_roster's (team_id, season_id) foreign key.
+    unique('season_teams_id_season_unique').on(t.id, t.seasonId),
+    index('season_teams_season_id_idx').on(t.seasonId),
+    uniqueIndex('season_teams_live_name_unique')
+      .on(t.seasonId, t.nameKey)
+      .where(sql`${t.status} in ('proposed', 'accepted', 'approved')`),
+    // Counting a member's proposals in a season.
+    index('season_teams_season_proposer_idx').on(t.seasonId, t.proposedBy),
+    check(
+      'season_teams_status_valid',
+      sql`${t.status} in ('proposed', 'accepted', 'approved', 'rejected', 'withdrawn')`,
+    ),
+    check('season_teams_partner_not_proposer', sql`${t.partnerId} <> ${t.proposedBy}`),
+  ],
+);
+
+// Who has been on each team, and when. A player's row opens when they commit to the team (the
+// proposer on proposing it, the partner on accepting, or a commissioner adds them) and closes
+// when they leave it (it is rejected or withdrawn, or a commissioner replaces them). Rows are
+// never deleted. The partial unique index allows each player one open row per season, so one
+// team per season. A season game stores its own players and teams, so closing a row never
+// rewrites one.
+export const teamRoster = pgTable(
+  'team_roster',
+  {
+    id: id(),
+    teamId: uuid('team_id').notNull(),
+    // Always the team's own season (the foreign key below); carried here for the index.
+    seasonId: uuid('season_id').notNull(),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id),
+    validFrom: ts('valid_from').notNull(),
+    validTo: ts('valid_to'),
+  },
+  (t) => [
+    foreignKey({
+      name: 'team_roster_team_season_fk',
+      columns: [t.teamId, t.seasonId],
+      foreignColumns: [seasonTeams.id, seasonTeams.seasonId],
+    }),
+    index('team_roster_team_id_idx').on(t.teamId),
+    uniqueIndex('team_roster_one_team_per_season')
+      .on(t.seasonId, t.membershipId)
+      .where(sql`${t.validTo} is null`),
+    check('team_roster_valid_range', sql`${t.validTo} is null or ${t.validTo} >= ${t.validFrom}`),
+  ],
+);
+
 // A recorded game. Its rules snapshot is the league rules at first submission, and every
 // revision is checked against it, so editing the league rules never re-validates a game.
 // Retrying a submission with the same idempotency key returns this game, provided the

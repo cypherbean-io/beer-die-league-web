@@ -159,24 +159,27 @@ export const SettingsBody = z
   .refine(atLeastOneKey, 'Change at least one setting');
 export type SettingsBody = z.input<typeof SettingsBody>;
 
-// One line of 1–60 visible characters, NFKC-normalized like a league name, with runs of
-// spaces collapsed. Every member sees season names, so like display names they can't hold
-// line breaks, direction overrides, or invisible characters that would disguise them.
-export const SeasonName = z
-  .string()
-  .max(200)
-  .transform((name) => name.normalize('NFKC').trim().replace(/ {2,}/g, ' '))
-  .pipe(
-    z
-      .string()
-      .min(1)
-      .max(60)
-      .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$/u, 'Use a single line of text')
-      .refine(
-        (name) => !/\p{Default_Ignorable_Code_Point}/u.test(name),
-        'Remove invisible characters',
-      ),
-  );
+// One line of 1 to `max` visible characters, NFKC-normalized like a league name, with runs of
+// spaces collapsed. Every member sees season and team names, so like display names they can't
+// hold line breaks, direction overrides, or invisible characters that would disguise them.
+const oneLineName = (max: number) =>
+  z
+    .string()
+    .max(200)
+    .transform((name) => name.normalize('NFKC').trim().replace(/ {2,}/g, ' '))
+    .pipe(
+      z
+        .string()
+        .min(1)
+        .max(max)
+        .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]*$/u, 'Use a single line of text')
+        .refine(
+          (name) => !/\p{Default_Ignorable_Code_Point}/u.test(name),
+          'Remove invisible characters',
+        ),
+    );
+
+export const SeasonName = oneLineName(60);
 
 export const CreateSeasonBody = z.strictObject({ name: SeasonName });
 export type CreateSeasonBody = z.input<typeof CreateSeasonBody>;
@@ -241,6 +244,57 @@ export type SeasonResponse = z.infer<typeof SeasonResponse>;
 export const SeasonsResponse = z.strictObject({ seasons: z.array(Season) });
 export type SeasonsResponse = z.infer<typeof SeasonsResponse>;
 
+// Unique, ignoring case, among a season's teams that haven't been rejected or withdrawn.
+// Members pick opponents by team name, so like a display name it can't mix lookalike alphabets
+// to pass for another team's.
+export const TeamName = oneLineName(40).refine(
+  (name) => CONFUSABLE_SCRIPTS.filter((script) => script.test(name)).length <= 1,
+  'Use letters from one alphabet',
+);
+
+// A member proposes a team with a partner, who then accepts.
+export const ProposeTeamBody = z.strictObject({ name: TeamName, partnerId: z.uuid() });
+export type ProposeTeamBody = z.input<typeof ProposeTeamBody>;
+
+// An approved team's new roster: two different approved members.
+export const RosterBody = z.strictObject({
+  membershipIds: z
+    .array(z.uuid())
+    .length(2)
+    .refine(
+      (ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length,
+      'List two different players',
+    ),
+});
+export type RosterBody = z.input<typeof RosterBody>;
+
+// SPEC §3.7: a member proposes a team with a partner (proposed), the partner accepts
+// (accepted), and a commissioner approves it (approved). Until then either player can withdraw
+// it, and a commissioner can reject it. Only an approved team plays season games.
+export const TeamStatus = z.enum(['proposed', 'accepted', 'approved', 'rejected', 'withdrawn']);
+export type TeamStatus = z.infer<typeof TeamStatus>;
+
+const TeamPlayer = z.strictObject({ membershipId: z.uuid(), displayName: z.string() });
+
+export const Team = z.strictObject({
+  id: z.uuid(),
+  seasonId: z.uuid(),
+  name: z.string(),
+  status: TeamStatus,
+  proposedBy: z.uuid(),
+  // The current roster. A rejected or withdrawn team lists the pair it was proposed with.
+  players: z.array(TeamPlayer),
+  createdAt: z.iso.datetime(),
+});
+export type Team = z.infer<typeof Team>;
+
+export const TeamResponse = z.strictObject({ team: Team });
+export type TeamResponse = z.infer<typeof TeamResponse>;
+
+// By name.
+export const TeamsResponse = z.strictObject({ teams: z.array(Team) });
+export type TeamsResponse = z.infer<typeof TeamsResponse>;
+
 export const AUDIT_PAGE_MAX = 100;
 
 // Query strings arrive as strings. Only plain digits count as a limit, so "1e2" and " 5"
@@ -284,6 +338,21 @@ const OverrideDecidedDetails = z.strictObject({
 // The season an entry is about, named when the log is read rather than stored in `details`.
 const AuditSeason = z.strictObject({ id: z.uuid(), name: z.string() });
 
+// Likewise the team an entry is about, and the players it names.
+const AuditTeam = z.strictObject({ id: z.uuid(), name: z.string() });
+const AuditPlayer = z.strictObject({ membershipId: z.uuid(), displayName: z.string() });
+
+// What the log stores when a commissioner changes an approved team's roster: its players'
+// ids before and after, in roster order.
+export const RosterChangeDetails = z.strictObject({
+  before: z.array(z.uuid()),
+  after: z.array(z.uuid()),
+});
+
+// What the log stores when a commissioner rejects a team: its status then. Only its pair and
+// the commissioners ever saw a team rejected as a proposal, so only they see its name here.
+export const TeamRejectedDetails = z.strictObject({ status: z.enum(['proposed', 'accepted']) });
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -305,7 +374,7 @@ export const AuditEvent = z.discriminatedUnion('action', [
     targetType: z.literal('game'),
     details: ForcedConfirmationDetails,
     // The player confirmed for, named when the log is read rather than stored in `details`.
-    player: z.strictObject({ membershipId: z.uuid(), displayName: z.string() }),
+    player: AuditPlayer,
   }),
   z.strictObject({
     ...auditEventFields,
@@ -333,6 +402,32 @@ export const AuditEvent = z.discriminatedUnion('action', [
     targetType: z.literal('season'),
     details: z.strictObject({ before: StandingsConfig, after: StandingsConfig }),
     season: AuditSeason,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('team.approved'),
+    targetType: z.literal('team'),
+    details: z.strictObject({}),
+    team: AuditTeam,
+    season: AuditSeason,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('team.rejected'),
+    targetType: z.literal('team'),
+    details: TeamRejectedDetails,
+    // Null for a rejected proposal, unless the reader is one of its pair or a commissioner.
+    team: AuditTeam.nullable(),
+    season: AuditSeason,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('team.roster_updated'),
+    targetType: z.literal('team'),
+    details: RosterChangeDetails,
+    team: AuditTeam,
+    season: AuditSeason,
+    roster: z.strictObject({ before: z.array(AuditPlayer), after: z.array(AuditPlayer) }),
   }),
 ]);
 export type AuditEvent = z.infer<typeof AuditEvent>;
