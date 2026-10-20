@@ -78,6 +78,13 @@
       "when": 1792496913811,
       "tag": "0010_games_confirmed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792499828658,
+      "tag": "0011_confirmations_forced_by",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,3 @@
+ALTER TABLE "confirmations" ADD COLUMN "forced_by" uuid;--> statement-breakpoint
+ALTER TABLE "confirmations" ADD CONSTRAINT "confirmations_forced_by_memberships_id_fk" FOREIGN KEY ("forced_by") REFERENCES "public"."memberships"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "confirmations" ADD CONSTRAINT "confirmations_forced_has_forced_by" CHECK (("confirmations"."kind" = 'forced') = ("confirmations"."forced_by" is not null));

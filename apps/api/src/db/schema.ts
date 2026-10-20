@@ -332,7 +332,9 @@ export const revisionPlayers = pgTable(
 );
 
 // A player's confirmation of one revision; a new revision starts with none of the old ones.
-// The foreign key to revision_players means only that revision's players can confirm it.
+// The foreign key to revision_players means only that revision's players can confirm it. A
+// `forced` confirmation was given by the commissioner in `forced_by` for a silent player, and
+// is audited.
 export const confirmations = pgTable(
   'confirmations',
   {
@@ -340,6 +342,7 @@ export const confirmations = pgTable(
     revisionId: uuid('revision_id').notNull(),
     membershipId: uuid('membership_id').notNull(),
     kind: text('kind', { enum: ['player', 'forced'] }).notNull(),
+    forcedBy: uuid('forced_by').references(() => memberships.id),
     createdAt: ts('created_at').notNull(),
   },
   (t) => [
@@ -350,6 +353,10 @@ export const confirmations = pgTable(
       foreignColumns: [revisionPlayers.revisionId, revisionPlayers.membershipId],
     }),
     check('confirmations_kind_valid', sql`${t.kind} in ('player', 'forced')`),
+    check(
+      'confirmations_forced_has_forced_by',
+      sql`(${t.kind} = 'forced') = (${t.forcedBy} is not null)`,
+    ),
   ],
 );
 

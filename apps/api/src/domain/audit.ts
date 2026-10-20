@@ -1,13 +1,19 @@
-import { AUDIT_PAGE_MAX, AuditEvent, type AuditResponse } from '@beer-die/core';
-import { and, desc, eq, lt } from 'drizzle-orm';
+import {
+  AUDIT_PAGE_MAX,
+  AuditEvent,
+  type AuditResponse,
+  ForcedConfirmationDetails,
+} from '@beer-die/core';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { Db, Tx } from '../db/client.ts';
 import { auditEvents, memberships } from '../db/schema.ts';
 import type { Actor } from './membership.ts';
 
 const DEFAULT_PAGE = 50;
 
-// What a caller supplies; the log adds the id, time, league, and actor. Distributes over
-// the union, so each action keeps its own `details` shape.
+// What a caller supplies; the log adds the id, time, league, and actor, and names any player
+// an entry is about when it is read. Distributes over the union, so each action keeps its own
+// `details` shape.
 type Recordable<E extends AuditEvent> = E extends AuditEvent
   ? Pick<E, 'action' | 'targetType' | 'targetId' | 'actorWasParticipant' | 'details'>
   : never;
@@ -61,14 +67,39 @@ export async function listAudit(
     .limit(limit + 1);
 
   const page = rows.slice(0, limit);
+  // A forced confirmation names the player it was for. The name is looked up now, not stored,
+  // so the log shows a renamed or anonymized member as they are today.
+  const playerIdOf = new Map(
+    page.flatMap((row) =>
+      row.action === 'game.confirmation_forced'
+        ? [[row.id, ForcedConfirmationDetails.parse(row.details).membershipId] as const]
+        : [],
+    ),
+  );
+  const players =
+    playerIdOf.size === 0
+      ? []
+      : await db
+          .select({ membershipId: memberships.id, displayName: memberships.displayName })
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.leagueId, actor.leagueId),
+              inArray(memberships.id, [...playerIdOf.values()]),
+            ),
+          );
+  const playerById = new Map(players.map((p) => [p.membershipId, p]));
+
   // Parsed rather than cast: a row whose stored shape has drifted fails here, loudly,
   // instead of reaching clients.
-  const events = page.map(({ actorMembershipId, actorDisplayName, createdAt, ...row }) =>
-    AuditEvent.parse({
+  const events = page.map(({ actorMembershipId, actorDisplayName, createdAt, ...row }) => {
+    const playerId = playerIdOf.get(row.id);
+    return AuditEvent.parse({
       ...row,
       createdAt: createdAt.toISOString(),
       actor: { membershipId: actorMembershipId, displayName: actorDisplayName },
-    }),
-  );
+      ...(playerId !== undefined && { player: playerById.get(playerId) }),
+    });
+  });
   return { events, nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null };
 }

@@ -2,6 +2,7 @@ import {
   checkRules,
   checkStructure,
   type CorrectGameBody,
+  type ForceConfirmBody,
   Game,
   type GamePlayer,
   type GameRevision,
@@ -30,7 +31,8 @@ import {
 import { ApiError } from '../http.ts';
 import { enqueueEmail } from '../mail/outbox.ts';
 import { GAME_REVISION, gameRevisionParams } from '../mail/templates.ts';
-import type { Actor } from './membership.ts';
+import { recordAudit } from './audit.ts';
+import { type Actor, assertCommissioner } from './membership.ts';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -637,6 +639,113 @@ export async function confirmRevision(
       kind: 'player',
       createdAt: now,
     });
+    await settleRevision(tx, game, now);
+    return loadGame(tx, game.id);
+  });
+}
+
+// A commissioner confirms the revision they were shown for listed players who have stayed
+// silent (SPEC §3.5). Each forced confirmation is audited, flagged when the commissioner played
+// in the game, and the revision then confirms like any other once all four have one. A listed
+// player who has already confirmed is skipped, so if none is left the game comes back
+// unchanged, whatever has happened to it since. A player who disagrees can still correct the
+// result, which starts the confirmations over.
+export async function forceConfirm(
+  deps: Deps,
+  actor: Actor,
+  gameId: string,
+  revisionId: string,
+  body: ForceConfirmBody,
+): Promise<Game> {
+  assertCommissioner(actor);
+  const now = deps.clock.now();
+  // Ids are matched case-insensitively; Postgres returns them in lower case.
+  const rid = revisionId.toLowerCase();
+  const listed = body.membershipIds.map((id) => id.toLowerCase());
+
+  return deps.db.transaction(async (tx) => {
+    const game = await lockGame(tx, actor, gameId, now);
+    // The role was read before the lock wait. FOR SHARE re-reads it as committed since, and
+    // holds it until this commits.
+    const [self] = await tx
+      .select({ role: memberships.role })
+      .from(memberships)
+      .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')))
+      .for('share');
+    assertCommissioner({ ...actor, role: self?.role ?? 'member' });
+
+    const [revision] = await tx
+      .select({ status: gameRevisions.status })
+      .from(gameRevisions)
+      .where(and(eq(gameRevisions.id, rid), eq(gameRevisions.gameId, game.id)));
+    if (!revision) throw notFound();
+
+    const seats = await tx
+      .select({ membershipId: revisionPlayers.membershipId, confirmation: confirmations.id })
+      .from(revisionPlayers)
+      .leftJoin(
+        confirmations,
+        and(
+          eq(confirmations.revisionId, revisionPlayers.revisionId),
+          eq(confirmations.membershipId, revisionPlayers.membershipId),
+        ),
+      )
+      .where(eq(revisionPlayers.revisionId, rid));
+    const hasConfirmed = new Map(seats.map((s) => [s.membershipId, s.confirmation !== null]));
+    const outsiders = listed.flatMap((id, i) =>
+      hasConfirmed.has(id)
+        ? []
+        : [
+            {
+              code: 'NOT_IN_GAME',
+              path: ['membershipIds', i],
+              message: 'Not a player in this game',
+            },
+          ],
+    );
+    if (outsiders.length > 0) {
+      throw invalid('Only the players in this game can be confirmed', outsiders);
+    }
+    // A forced confirmation says the player stayed silent, which a commissioner who played
+    // and is right here did not.
+    const own = listed.indexOf(actor.id);
+    if (own !== -1) {
+      throw invalid('A commissioner confirms their own result like any other player', [
+        { code: 'SELF', path: ['membershipIds', own], message: 'Confirm your own result instead' },
+      ]);
+    }
+
+    const silent = listed.filter((id) => !hasConfirmed.get(id));
+    if (silent.length === 0) return loadGame(tx, game.id);
+    if (revision.status === 'expired') throw windowClosed('confirm');
+    if (revision.status !== 'open' || game.openRevisionId !== rid) {
+      throw staleRevision('confirmed');
+    }
+
+    await tx.insert(confirmations).values(
+      silent.map((membershipId) => ({
+        revisionId: rid,
+        membershipId,
+        kind: 'forced' as const,
+        forcedBy: actor.id,
+        createdAt: now,
+      })),
+    );
+    const actorWasParticipant = hasConfirmed.has(actor.id);
+    for (const membershipId of silent) {
+      await recordAudit(
+        tx,
+        actor,
+        {
+          action: 'game.confirmation_forced',
+          targetType: 'game',
+          targetId: game.id,
+          actorWasParticipant,
+          details: { revisionId: rid, membershipId },
+        },
+        now,
+      );
+    }
     await settleRevision(tx, game, now);
     return loadGame(tx, game.id);
   });

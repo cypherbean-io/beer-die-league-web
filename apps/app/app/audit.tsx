@@ -39,6 +39,8 @@ function describeEvent(event: AuditEvent): { summary: string; lines: string[] } 
         summary: 'changed the league settings',
         lines: changeLines(event.details, SETTING_LABELS),
       };
+    case 'game.confirmation_forced':
+      return { summary: `confirmed a game on behalf of ${event.player.displayName}`, lines: [] };
   }
 }
 

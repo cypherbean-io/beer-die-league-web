@@ -183,6 +183,12 @@ const auditEventFields = {
   targetId: z.uuid(),
 };
 
+// What the log stores when a commissioner confirms a revision for a silent player.
+export const ForcedConfirmationDetails = z.strictObject({
+  revisionId: z.uuid(),
+  membershipId: z.uuid(),
+});
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -197,6 +203,14 @@ export const AuditEvent = z.discriminatedUnion('action', [
     action: z.literal('league.settings_updated'),
     targetType: z.literal('league'),
     details: z.strictObject({ before: LeagueSettings, after: LeagueSettings }),
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('game.confirmation_forced'),
+    targetType: z.literal('game'),
+    details: ForcedConfirmationDetails,
+    // The player confirmed for, named when the log is read rather than stored in `details`.
+    player: z.strictObject({ membershipId: z.uuid(), displayName: z.string() }),
   }),
 ]);
 export type AuditEvent = z.infer<typeof AuditEvent>;
@@ -303,6 +317,21 @@ export const CorrectGameBody = z.strictObject({
   ...resultFields,
 });
 export type CorrectGameBody = z.input<typeof CorrectGameBody>;
+
+// The players a commissioner confirms an open revision for, because they have stayed silent.
+// A listed player who has already confirmed is skipped. A game has four players, each listed
+// at most once.
+export const ForceConfirmBody = z.strictObject({
+  membershipIds: z
+    .array(z.uuid())
+    .min(1)
+    .max(4)
+    .refine(
+      (ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length,
+      'List each player once',
+    ),
+});
+export type ForceConfirmBody = z.input<typeof ForceConfirmBody>;
 
 type SideLines = { players: Array<Omit<PlayerLine, 'side'>> };
 

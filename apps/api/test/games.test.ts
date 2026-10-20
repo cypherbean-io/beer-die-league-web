@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  AuditResponse,
   type CorrectGameBody,
   CreateInviteResponse,
   ErrorBody,
@@ -236,6 +237,35 @@ async function corrected(t: League, as: Caller, gameId: string, body: unknown): 
   const res = await correct(t, as, gameId, body);
   expect(res.status).toBe(201);
   return GameResponse.parse(await res.json()).game;
+}
+
+function forceConfirm(
+  t: League,
+  as: Caller,
+  gameId: string,
+  revisionId: string,
+  body: unknown,
+): Promise<Response> {
+  return call(
+    'POST',
+    `/api/leagues/${t.leagueId}/games/${gameId}/revisions/${revisionId}/force-confirm`,
+    { as, body },
+  );
+}
+
+// The commissioner confirms the open revision shown in `g` for `players`.
+async function forced(t: League, g: Game, players: Player[]): Promise<Game> {
+  const res = await forceConfirm(t, t.commissioner, g.id, g.openRevision!.id, {
+    membershipIds: players.map((p) => p.membershipId),
+  });
+  expect(res.status).toBe(200);
+  return GameResponse.parse(await res.json()).game;
+}
+
+async function auditLog(t: League, as: Caller) {
+  const res = await call('GET', `/api/leagues/${t.leagueId}/audit`, { as });
+  expect(res.status).toBe(200);
+  return AuditResponse.parse(await res.json()).events;
 }
 
 async function inbox(t: League, as: Caller): Promise<Game[]> {
@@ -1949,6 +1979,350 @@ describe('reopening a confirmed exhibition game', () => {
     const loser = responses.find((r) => r.status === 409)!;
     expect((await errorOf(loser)).code).toBe('STALE_REVISION');
     expect(await rows('game_revisions')).toBe(2);
+  });
+});
+
+describe('force-confirming', () => {
+  // Bo submits a game Ed, Bo, Cy, and Di played, so Ana, the commissioner, sat it out.
+  async function gameWithoutAna(t: Table): Promise<{ ed: Player; g: Game }> {
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const g = await submitted(
+      t,
+      t.bo.caller,
+      game(t, {
+        sides: {
+          A: { players: [line(ed, 6), line(t.bo, 5)] },
+          B: { players: [line(t.cy, 5), line(t.di, 4)] },
+        },
+      }),
+    );
+    return { ed, g };
+  }
+
+  it('confirms the game, so it counts, once a commissioner confirms for the silent players', async () => {
+    const t = await table();
+    const { ed, g } = await gameWithoutAna(t);
+
+    const after = await forced(t, g, [ed, t.cy, t.di]);
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      windowExpiresAt: null,
+      openRevision: null,
+      confirmedRevision: { id: g.openRevision!.id, status: 'confirmed' },
+    });
+    expect(confirmationsOf(after)).toEqual(['forced', 'player', 'forced', 'forced']);
+    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
+  });
+
+  it('records one audit entry per forced player, naming them, for every member to see', async () => {
+    const t = await table();
+    const { g } = await gameWithoutAna(t);
+    await forced(t, g, [t.cy, t.di]);
+
+    const events = await auditLog(t, t.bo.caller);
+
+    const entry = (p: Player, displayName: string) => ({
+      id: expect.any(String),
+      createdAt: clock.now().toISOString(),
+      actor: { membershipId: t.ana.membershipId, displayName: 'Ana' },
+      actorWasParticipant: false,
+      action: 'game.confirmation_forced',
+      targetType: 'game',
+      targetId: g.id,
+      details: { revisionId: g.openRevision!.id, membershipId: p.membershipId },
+      player: { membershipId: p.membershipId, displayName },
+    });
+    expect(events).toHaveLength(2);
+    expect(events).toEqual(expect.arrayContaining([entry(t.cy, 'Cy'), entry(t.di, 'Di')]));
+  });
+
+  it('flags the audit entry when the commissioner played in the game', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    await forced(t, g, [t.cy]);
+
+    const [event] = await auditLog(t, t.cy.caller);
+    expect(event).toMatchObject({ action: 'game.confirmation_forced', actorWasParticipant: true });
+  });
+
+  it('stores which commissioner forced each confirmation', async () => {
+    const t = await table();
+    const g = await submitted(t, t.bo.caller, game(t));
+
+    await forced(t, g, [t.cy]);
+
+    const stored = await api.db.execute<{ membership_id: string; kind: string; forced_by: string }>(
+      sql`select membership_id, kind, forced_by from confirmations order by kind = 'forced'`,
+    );
+    expect([...stored]).toEqual([
+      { membership_id: t.bo.membershipId, kind: 'player', forced_by: null },
+      { membership_id: t.cy.membershipId, kind: 'forced', forced_by: t.ana.membershipId },
+    ]);
+  });
+
+  it('leaves the game pending, and in the inbox of anyone still silent, until all four have confirmed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+
+    const after = await forced(t, g, [t.cy]);
+
+    expect(after).toMatchObject({ status: 'pending', confirmedRevision: null });
+    expect(confirmationsOf(after)).toEqual(['player', 'player', 'forced', null]);
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await inbox(t, t.cy.caller)).toEqual([]);
+    expect((await inbox(t, t.di.caller)).map((x) => x.id)).toEqual([g.id]);
+  });
+
+  it('skips a listed player who has already confirmed, auditing only the forced one', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+
+    const after = await forced(t, g, [t.bo, t.cy]);
+
+    expect(confirmationsOf(after)).toEqual(['player', 'player', 'forced', null]);
+    const events = await auditLog(t, t.ana.caller);
+    expect(events.map((e) => e.action === 'game.confirmation_forced' && e.player)).toEqual([
+      { membershipId: t.cy.membershipId, displayName: 'Cy' },
+    ]);
+  });
+
+  it('answers a repeated force-confirm with the game unchanged, even once it counts', async () => {
+    const t = await table();
+    const { ed, g } = await gameWithoutAna(t);
+    const first = await forced(t, g, [ed, t.cy, t.di]);
+
+    const again = await forced(t, g, [ed, t.cy, t.di]);
+
+    expect(again).toEqual(first);
+    expect(await rows('confirmations')).toBe(4);
+    expect(await rows('audit_events')).toBe(3);
+  });
+
+  it('refuses a member who is not a commissioner with 403, even one who played', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await forceConfirm(t, t.bo.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.cy.membershipId],
+    });
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await rows('confirmations')).toBe(1);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('refuses a commissioner demoted while the request waited with 403', async () => {
+    const t = await table();
+    const g = await submitted(t, t.bo.caller, game(t));
+    let pending: Promise<Response> | undefined;
+
+    // The request passes the role check it can make up front, then waits on the game lock
+    // while Ana loses the role.
+    await api.db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from games where id = ${g.id} for update`);
+      pending = forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+        membershipIds: [t.cy.membershipId],
+      });
+      await waitForLockWaiters(api.db, 1);
+      await api.db.execute(
+        sql`update memberships set role = 'member' where id = ${t.ana.membershipId}`,
+      );
+    });
+    const res = await pending!;
+
+    expect(res.status).toBe(403);
+    expect(await rows('confirmations')).toBe(1);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('refuses a revision whose window has closed with 409 WINDOW_CLOSED, so the game never counts', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY);
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.bo.membershipId, t.cy.membershipId, t.di.membershipId],
+    });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await countedRevision(g.id)).toBeNull();
+    expect(await rows('confirmations')).toBe(1);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('accepts a force-confirm 1 s before the window closes', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    clock.advance(7 * DAY - SECOND);
+
+    const after = await forced(t, g, [t.bo]);
+
+    expect(confirmationsOf(after)).toEqual(['player', 'forced', null, null]);
+  });
+
+  it('refuses a superseded revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.cy.membershipId],
+    });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('starts the confirmations over when a forced player corrects the result', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await forced(t, g, [t.di]);
+
+    const after = await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    expect(after.openRevision!.number).toBe(2);
+    expect(confirmationsOf(after)).toEqual([null, null, null, 'player']);
+  });
+
+  it('keeps a rule-breaking revision uncounted after forcing while its review is pending', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, marginTooSmall(t, { requestOverride: true }));
+
+    const after = await forced(t, g, [t.bo, t.cy, t.di]);
+
+    expect(after).toMatchObject({
+      status: 'pending',
+      confirmedRevision: null,
+      openRevision: { status: 'open', overrideStatus: 'requested' },
+    });
+    expect(confirmationsOf(after)).toEqual(['player', 'forced', 'forced', 'forced']);
+    expect(await countedRevision(g.id)).toBeNull();
+  });
+
+  it('refuses a listed member who did not play with 422 VALIDATION, naming the entry and forcing no one', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.cy.membershipId, ed.membershipId],
+    });
+
+    expect(res.status).toBe(422);
+    const error = await errorOf(res);
+    expect(error.code).toBe('VALIDATION');
+    expect(error.details).toEqual([
+      { code: 'NOT_IN_GAME', path: ['membershipIds', 1], message: 'Not a player in this game' },
+    ]);
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('refuses a playing commissioner forcing their own confirmation with 422 VALIDATION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.bo.caller, game(t));
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.cy.membershipId, t.ana.membershipId],
+    });
+
+    expect(res.status).toBe(422);
+    const error = await errorOf(res);
+    expect(error.code).toBe('VALIDATION');
+    expect(error.details).toEqual([
+      { code: 'SELF', path: ['membershipIds', 1], message: 'Confirm your own result instead' },
+    ]);
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it.each([
+    ['no players', { membershipIds: [] }],
+    ['an unknown key', { membershipIds: [randomUUID()], kind: 'player' }],
+  ])('rejects a body with %s with 422 VALIDATION', async (_label, body) => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, body);
+
+    expect(res.status).toBe(422);
+    expect((await errorOf(res)).code).toBe('VALIDATION');
+    expect(await rows('confirmations')).toBe(1);
+  });
+
+  it('gives 404 for a revision that belongs to a different game', async () => {
+    const t = await table();
+    const first = await submitted(t, t.ana.caller, game(t));
+    const second = await submitted(t, t.ana.caller, game(t));
+
+    const res = await forceConfirm(t, t.ana.caller, first.id, second.openRevision!.id, {
+      membershipIds: [t.cy.membershipId],
+    });
+
+    expect(res.status).toBe(404);
+    expect(await rows('confirmations')).toBe(2);
+  });
+
+  it("gives 404 to a commissioner of another league, even through their own league's path", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const other = await league('Attic League', 'zed@example.com', 'Zed');
+
+    const res = await forceConfirm(other, other.commissioner, g.id, g.openRevision!.id, {
+      membershipIds: [t.cy.membershipId],
+    });
+
+    expect(res.status).toBe(404);
+    expect(await rows('confirmations')).toBe(1);
+    expect(await rows('audit_events')).toBe(0);
+  });
+
+  it('accepts the game, revision, and player ids in upper case', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+
+    const res = await forceConfirm(
+      t,
+      t.ana.caller,
+      g.id.toUpperCase(),
+      g.openRevision!.id.toUpperCase(),
+      { membershipIds: [t.cy.membershipId.toUpperCase()] },
+    );
+
+    expect(res.status).toBe(200);
+    expect(confirmationsOf(GameResponse.parse(await res.json()).game)).toEqual([
+      'player',
+      null,
+      'forced',
+      null,
+    ]);
+  });
+
+  it("records one confirmation when a force-confirm races the player's own", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const rid = g.openRevision!.id;
+
+    const results = await raceOn(g.id, () => [
+      forceConfirm(t, t.ana.caller, g.id, rid, { membershipIds: [t.di.membershipId] }),
+      confirm(t, t.di.caller, g.id, rid),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    expect(results.map((r) => r.game.status)).toEqual(['confirmed', 'confirmed']);
+    expect(await rows('confirmations')).toBe(4);
+    // Whichever ran first confirmed Di; the force is audited only if it was that one.
+    const [di] = await api.db.execute<{ kind: string }>(
+      sql`select kind from confirmations where membership_id = ${t.di.membershipId}`,
+    );
+    expect(await rows('audit_events')).toBe(di!.kind === 'forced' ? 1 : 0);
   });
 });
 
