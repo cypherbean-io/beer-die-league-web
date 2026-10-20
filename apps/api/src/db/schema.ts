@@ -97,10 +97,17 @@ export const emailOutbox = pgTable(
     lastError: text('last_error'),
     createdAt: ts('created_at').notNull(),
   },
+  // The worker claims sign-in codes and other mail separately (see drainOutbox), each in
+  // send order from its own index. Rows past the attempt cap are out of both, so dropped and
+  // failed mail doesn't slow every claim. 'sign_in_code' is SIGN_IN_CODE in
+  // mail/templates.ts and 5 is MAX_SEND_ATTEMPTS in mail/outbox.ts.
   (t) => [
-    index('email_outbox_pending_idx')
+    index('email_outbox_pending_codes_idx')
       .on(t.nextAttemptAt)
-      .where(sql`${t.sentAt} is null`),
+      .where(sql`${t.sentAt} is null and ${t.attempts} < 5 and ${t.template} = 'sign_in_code'`),
+    index('email_outbox_pending_mail_idx')
+      .on(t.nextAttemptAt)
+      .where(sql`${t.sentAt} is null and ${t.attempts} < 5 and ${t.template} <> 'sign_in_code'`),
   ],
 );
 

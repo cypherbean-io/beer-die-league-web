@@ -11,22 +11,37 @@ import {
   type SubmitGameBody,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
+import nodemailer from 'nodemailer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
-import { sweepExpired } from '../src/domain/games.ts';
+import { GAME_WRITES_PER_HOUR, sweepExpired } from '../src/domain/games.ts';
+import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
 import { type Caller, client, createLeague, signIn } from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
-const DAY = 24 * 60 * 60 * SECOND;
+const HOUR = 60 * 60 * SECOND;
+const DAY = 24 * HOUR;
 const NOW = '2026-10-18T12:00:00.000Z';
 const DEFAULT_RULES = { targetScore: 11, winBy: 2, sinkPoints: 0, sinkEndsGame: false };
+
+type SentMail = { to: Array<{ address: string }>; subject: string; text: string };
 
 let database: Awaited<ReturnType<typeof freshDatabase>>;
 let api: TestApi;
 let clock: FixedClock;
 let call: ReturnType<typeof client>;
+let sent: SentMail[];
+
+const jsonTransport = nodemailer.createTransport({ jsonTransport: true });
+const capturingTransport: MailTransport = {
+  async sendMail(message) {
+    const info = await jsonTransport.sendMail(message);
+    sent.push(JSON.parse(info.message) as SentMail);
+    return info;
+  },
+};
 
 beforeAll(async () => {
   database = await freshDatabase();
@@ -38,6 +53,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   clock = new FixedClock(NOW);
+  sent = [];
   api = await startApi(database.url, { clock });
   call = client(api.baseUrl);
   await resetTables(api.db);
@@ -49,6 +65,17 @@ afterEach(async () => {
 
 async function errorOf(res: Response) {
   return ErrorBody.parse(await res.json()).error;
+}
+
+function drain() {
+  return drainOutbox({
+    db: api.db,
+    clock,
+    transport: capturingTransport,
+    mailFrom: 'Beer Die League <league@app.test>',
+    authSecret: api.authSecret,
+    log: (entry) => api.logs.push(entry),
+  });
 }
 
 type Player = { caller: Caller; membershipId: string };
@@ -1138,9 +1165,11 @@ describe('the inbox', () => {
 
   it(`lists at most ${INBOX_MAX} games, the ones whose windows close soonest`, async () => {
     const t = await table();
+    // Spread across Bo's three co-players, so none of them reaches the game write limit.
+    const submitters = [t.ana, t.cy, t.di];
     const recorded: Game[] = [];
     for (let i = 0; i <= INBOX_MAX; i++) {
-      recorded.push(await submitted(t, t.ana.caller, game(t)));
+      recorded.push(await submitted(t, submitters[i % 3]!.caller, game(t)));
       clock.advance(SECOND);
     }
 
@@ -1653,5 +1682,202 @@ describe('concurrent corrections', () => {
     const winner = GameResponse.parse(await won[0]!.json()).game;
     expect(await countedRevision(g.id)).toBe(winner.confirmedRevision?.id ?? null);
     expect(await rows('game_revisions')).toBe(winner.openRevision ? 2 : 1);
+  });
+});
+
+describe('revision emails', () => {
+  // A table whose setup mail (member-pending notes to Ana) is already sent and forgotten, so
+  // a test sees only what its games enqueue.
+  async function quietTable(): Promise<Table> {
+    const t = await table();
+    await drain();
+    sent = [];
+    return t;
+  }
+
+  const recipients = () => sent.map((m) => m.to[0]!.address).toSorted();
+
+  it('mails the other three players, not the submitter, when a game is submitted', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.ana.caller, game(t));
+    await drain();
+
+    expect(recipients()).toEqual(['bo@example.com', 'cy@example.com', 'di@example.com']);
+  });
+
+  it('names the submitter and links to the inbox', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.ana.caller, game(t));
+    await drain();
+
+    const [mail] = sent;
+    expect(mail!.subject).toBe('A new game is waiting for your confirmation');
+    expect(mail!.text).toContain('Ana submitted a game with you.');
+    expect(mail!.text).toContain(`${APP_ORIGIN}/inbox`);
+  });
+
+  it('mails the other players, naming the author, when a game is corrected', async () => {
+    const t = await quietTable();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await drain();
+    sent = [];
+
+    await corrected(t, t.bo.caller, g.id, correction(t, g));
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com', 'cy@example.com', 'di@example.com']);
+    for (const mail of sent) {
+      expect(mail.subject).toBe('A corrected game is waiting for your confirmation');
+      expect(mail.text).toContain('Bo corrected a game with you.');
+    }
+  });
+
+  it('never carries scores, ids, or email addresses, in the outbox or the mail', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.ana.caller, game(t));
+    const stored = await api.db.execute<{ params: unknown }>(
+      sql`select params from email_outbox where template = 'game_revision'`,
+    );
+    await drain();
+
+    // Points, sinks, and every id contain digits; these display names and APP_ORIGIN don't.
+    expect(stored).toHaveLength(3);
+    for (const { params } of stored) expect(JSON.stringify(params)).not.toMatch(/\d/);
+    expect(sent).toHaveLength(3);
+    for (const mail of sent) {
+      expect(`${mail.subject}\n${mail.text}`).not.toMatch(/\d/);
+      expect(mail.text).not.toContain('@');
+    }
+  });
+
+  it('does not mail a player who opted out', async () => {
+    const t = await quietTable();
+    await api.db.execute(
+      sql`update memberships set email_notifications = false where id = ${t.cy.membershipId}`,
+    );
+
+    await submitted(t, t.ana.caller, game(t));
+    await drain();
+
+    expect(recipients()).toEqual(['bo@example.com', 'di@example.com']);
+  });
+
+  it('mails the other players about a game awaiting commissioner review', async () => {
+    const t = await quietTable();
+
+    await submitted(t, t.bo.caller, marginTooSmall(t, { requestOverride: true }));
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com', 'cy@example.com', 'di@example.com']);
+  });
+
+  it('does not mail anyone again when a submission is retried', async () => {
+    const t = await quietTable();
+    const body = game(t);
+    await submitted(t, t.ana.caller, body);
+
+    const retry = await submit(t, t.ana.caller, body);
+    await drain();
+
+    expect(retry.status).toBe(200);
+    expect(recipients()).toEqual(['bo@example.com', 'cy@example.com', 'di@example.com']);
+  });
+
+  it('never holds up a sign-in code behind a backlog of game mail', async () => {
+    const t = await quietTable();
+    // Seven games queue 21 notes, more than one drain sends, all older than the code.
+    for (let i = 0; i < 7; i++) await submitted(t, t.ana.caller, game(t));
+    clock.advance(SECOND);
+    const res = await call('POST', '/api/auth/code', { body: { email: 'bo@example.com' } });
+    expect(res.status).toBe(202);
+
+    await drain();
+
+    expect(sent.map((m) => m.subject)).toContain('Your Beer Die League sign-in code');
+  });
+
+  it('keeps game mail moving behind a flood of sign-in codes', async () => {
+    const t = await quietTable();
+    // A full batch of codes, all older than the game mail. Their params are blank, so the
+    // drain drops them, but each still takes a place in the batch.
+    await api.db.execute(sql`
+      insert into email_outbox (user_id, template, params, next_attempt_at, created_at)
+      select u.id, 'sign_in_code', '{}', ${NOW}, ${NOW}
+      from users u cross join generate_series(1, 20)
+      where u.email = 'cy@example.com'`);
+    clock.advance(SECOND);
+    await submitted(t, t.ana.caller, game(t));
+
+    await drain();
+
+    expect(recipients()).toEqual(['bo@example.com', 'cy@example.com', 'di@example.com']);
+  });
+
+  it('does not mail anyone about a refused submission', async () => {
+    const t = await quietTable();
+
+    const res = await submit(t, t.ana.caller, marginTooSmall(t));
+    await drain();
+
+    expect(res.status).toBe(422);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe('the game write limit', () => {
+  it(`refuses a member's submission past ${GAME_WRITES_PER_HOUR} game writes in an hour`, async () => {
+    const t = await table();
+    for (let i = 0; i < GAME_WRITES_PER_HOUR; i++) await submitted(t, t.ana.caller, game(t));
+
+    const res = await submit(t, t.ana.caller, game(t));
+
+    expect(res.status).toBe(429);
+    expect((await errorOf(res)).code).toBe('RATE_LIMITED');
+  });
+
+  it('counts corrections toward the same limit', async () => {
+    const t = await table();
+    let g = await submitted(t, t.ana.caller, game(t));
+    for (let i = 1; i < GAME_WRITES_PER_HOUR; i++) {
+      g = await corrected(t, t.ana.caller, g.id, correction(t, g));
+    }
+
+    const res = await correct(t, t.ana.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(429);
+    expect((await errorOf(res)).code).toBe('RATE_LIMITED');
+  });
+
+  it('limits each member separately', async () => {
+    const t = await table();
+    for (let i = 0; i < GAME_WRITES_PER_HOUR; i++) await submitted(t, t.ana.caller, game(t));
+
+    const res = await submit(t, t.bo.caller, game(t));
+
+    expect(res.status).toBe(201);
+  });
+
+  it('lets a member record games again once the hour has passed', async () => {
+    const t = await table();
+    for (let i = 0; i < GAME_WRITES_PER_HOUR; i++) await submitted(t, t.ana.caller, game(t));
+    clock.advance(HOUR);
+
+    const res = await submit(t, t.ana.caller, game(t));
+
+    expect(res.status).toBe(201);
+  });
+
+  it('queues no mail for a refused write', async () => {
+    const t = await table();
+    for (let i = 0; i < GAME_WRITES_PER_HOUR; i++) await submitted(t, t.ana.caller, game(t));
+    const outbox = await rows('email_outbox');
+
+    await submit(t, t.ana.caller, game(t));
+
+    expect(await rows('email_outbox')).toBe(outbox);
+    expect(await rows('games')).toBe(GAME_WRITES_PER_HOUR);
   });
 });

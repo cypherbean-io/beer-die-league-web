@@ -15,6 +15,7 @@ import {
   type SubmitGameBody,
 } from '@beer-die/core';
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, max } from 'drizzle-orm';
+import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
@@ -27,11 +28,22 @@ import {
   revisionPlayers,
 } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
+import { enqueueEmail } from '../mail/outbox.ts';
+import { GAME_REVISION, gameRevisionParams } from '../mail/templates.ts';
 import type { Actor } from './membership.ts';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+// Every submission or correction mails up to three players, so this bounds the mail one
+// member can cause. Far above what a real league night needs.
+export const GAME_WRITES_PER_HOUR = 30;
 
 type Deps = { db: Db; clock: Clock };
+
+// A write that opens a revision also mails the other players a link into the app, and counts
+// toward the author's write limit.
+type WriteDeps = Deps & { config: { appOrigin: string; authSecret: string } };
 
 type Path = Array<string | number>;
 
@@ -216,9 +228,18 @@ async function checkResult(
   return { players, ids, playedAt, winner: body.winner, ruleViolations };
 }
 
+// Counted outside the transaction, so a refused attempt still counts.
+async function limitGameWrites(deps: WriteDeps, actor: Actor, now: Date): Promise<void> {
+  const key = rateLimitKey(deps.config.authSecret, 'game-write', actor.id);
+  if (!(await hit(deps.db, key, GAME_WRITES_PER_HOUR, HOUR_MS, now))) {
+    throw new ApiError(429, 'RATE_LIMITED', 'Too many games recorded. Try again later.');
+  }
+}
+
 // Stores a checked result as the game's open revision, with the author's confirmation:
 // recording a result counts as confirming it. A result that breaks the rules awaits a
-// commissioner's review; nothing carries over from an earlier revision.
+// commissioner's review; nothing carries over from an earlier revision. The other players
+// are told by email.
 async function openRevision(
   tx: Tx,
   actor: Actor,
@@ -226,6 +247,7 @@ async function openRevision(
   number: number,
   result: CheckedResult,
   now: Date,
+  appOrigin: string,
 ): Promise<void> {
   const [revision] = await tx
     .insert(gameRevisions)
@@ -261,16 +283,56 @@ async function openRevision(
     createdAt: now,
   });
   await tx.update(games).set({ openRevisionId: revision.id }).where(eq(games.id, gameId));
+  // Revision 1 is the submission; every later one is a correction.
+  await mailOtherPlayers(tx, actor, result.ids, number === 1 ? 'submitted' : 'corrected', {
+    appOrigin,
+    now,
+  });
+}
+
+// Queues a note for each of the revision's other players who takes email (SPEC §3.9): the
+// author's name and a link to the inbox, never the scores. It is enqueued in the write's
+// transaction, so a write that fails or rolls back mails no one.
+async function mailOtherPlayers(
+  tx: Tx,
+  actor: Actor,
+  ids: string[],
+  action: 'submitted' | 'corrected',
+  { appOrigin, now }: { appOrigin: string; now: Date },
+): Promise<void> {
+  const seats = await tx
+    .select({
+      id: memberships.id,
+      userId: memberships.userId,
+      displayName: memberships.displayName,
+      emailNotifications: memberships.emailNotifications,
+    })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.leagueId, actor.leagueId),
+        inArray(memberships.id, ids),
+        eq(memberships.status, 'approved'),
+      ),
+    );
+  const author = seats.find((s) => s.id === actor.id);
+  if (!author) throw new Error('author of a checked result is missing');
+  const params = gameRevisionParams(author.displayName, action, `${appOrigin}/inbox`);
+  for (const seat of seats) {
+    if (seat.id === actor.id || !seat.emailNotifications) continue;
+    await enqueueEmail(tx, { userId: seat.userId, template: GAME_REVISION, params, now });
+  }
 }
 
 // Records the first submission of an exhibition game: revision 1, open, with the
 // submitter's confirmation. `leagueId` always comes from the actor's membership.
 export async function submitGame(
-  deps: Deps,
+  deps: WriteDeps,
   actor: Actor,
   body: SubmitGameBody,
 ): Promise<{ game: Game; created: boolean }> {
   const now = deps.clock.now();
+  await limitGameWrites(deps, actor, now);
   const payloadSha256 = payloadHash(body);
 
   return deps.db.transaction(async (tx) => {
@@ -310,7 +372,7 @@ export async function submitGame(
       return { game: raced, created: false };
     }
 
-    await openRevision(tx, actor, game.id, 1, result, now);
+    await openRevision(tx, actor, game.id, 1, result, now, deps.config.appOrigin);
     return { game: await loadGame(tx, game.id), created: true };
   });
 }
@@ -321,12 +383,13 @@ export async function submitGame(
 // confirm again. The window keeps running from first submission. A confirmed game can't be
 // corrected yet: reopening one arrives in a later slice.
 export async function correctGame(
-  deps: Deps,
+  deps: WriteDeps,
   actor: Actor,
   gameId: string,
   body: CorrectGameBody,
 ): Promise<Game> {
   const now = deps.clock.now();
+  await limitGameWrites(deps, actor, now);
   // Ids are matched case-insensitively; Postgres returns them in lower case.
   const baseId = body.baseRevisionId.toLowerCase();
 
@@ -361,7 +424,7 @@ export async function correctGame(
       .update(gameRevisions)
       .set({ status: 'superseded' })
       .where(eq(gameRevisions.id, baseId));
-    await openRevision(tx, actor, game.id, latest.number + 1, result, now);
+    await openRevision(tx, actor, game.id, latest.number + 1, result, now, deps.config.appOrigin);
     return loadGame(tx, game.id);
   });
 }

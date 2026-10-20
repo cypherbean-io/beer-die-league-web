@@ -210,6 +210,14 @@ describe('POST /api/auth/code', () => {
     expect(sent).toHaveLength(1);
   });
 
+  it('sends a full batch of codes in one drain when no other mail is waiting', async () => {
+    for (let i = 0; i < 20; i++) await requestCode(`player${i}@example.com`);
+
+    await drain();
+
+    expect(sent).toHaveLength(20);
+  });
+
   it('rate limits the 6th code request for one email within an hour', async () => {
     for (let i = 0; i < 5; i++) await requestCode('ana@example.com');
 
