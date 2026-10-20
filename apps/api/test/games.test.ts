@@ -212,11 +212,12 @@ async function confirmed(t: League, as: Caller, g: Game): Promise<Game> {
   return GameResponse.parse(await res.json()).game;
 }
 
-// A correction of the open revision shown in `g`: the default game with Di's 4 points fixed
-// to 3, so Ana and Bo beat Cy and Di 11–8.
+// A correction of the revision shown in `g`, its open one or else its confirmed one (which
+// reopens the game): the default game with Di's 4 points fixed to 3, so Ana and Bo beat Cy
+// and Di 11–8.
 function correction(t: Table, g: Game, patch: Partial<CorrectGameBody> = {}): CorrectGameBody {
   return {
-    baseRevisionId: g.openRevision!.id,
+    baseRevisionId: (g.openRevision ?? g.confirmedRevision)!.id,
     playedAt: '2026-10-18T11:30:00.000Z',
     sides: {
       A: { players: [line(t.ana, 6), line(t.bo, 5)] },
@@ -1465,23 +1466,6 @@ describe('stale and closed corrections', () => {
     expect(await rows('game_revisions')).toBe(1);
     expect(await countedRevision(g.id)).toBeNull();
   });
-
-  // Reopening a confirmed game through a correction is a later slice (SPEC §3.5).
-  it('refuses a correction of a confirmed game with 409, leaving its counted revision in place', async () => {
-    const t = await table();
-    const g = await submitted(t, t.ana.caller, game(t));
-    await confirmed(t, t.bo.caller, g);
-    await confirmed(t, t.cy.caller, g);
-    await confirmed(t, t.di.caller, g);
-
-    const res = await correct(t, t.bo.caller, g.id, correction(t, g));
-
-    expect(res.status).toBe(409);
-    expect((await errorOf(res)).code).toBe('STALE_REVISION');
-    expect(await countedRevision(g.id)).toBe(g.openRevision!.id);
-    expect(await revisionStatus(g.openRevision!.id)).toBe('confirmed');
-    expect(await rows('game_revisions')).toBe(1);
-  });
 });
 
 describe('validating a correction', () => {
@@ -1662,26 +1646,309 @@ describe('concurrent corrections', () => {
     expect(await rows('confirmations')).toBe(2);
   });
 
-  it('lets either the final confirmation or a correction win a race, never both', async () => {
+  // The correction is based on numbers its author saw, so it lands either way: it supersedes
+  // the open revision, or, once the final confirmation has gone first, reopens the game.
+  it('applies a correction racing the final confirmation after it, or refuses the confirmation', async () => {
     const t = await table();
     const g = await submitted(t, t.ana.caller, game(t));
     await confirmed(t, t.bo.caller, g);
     await confirmed(t, t.cy.caller, g);
     const rid = g.openRevision!.id;
 
-    const responses = await queuedOn(g.id, () => [
+    const [confirmRes, correctRes] = await queuedOn(g.id, () => [
       confirm(t, t.di.caller, g.id, rid),
       correct(t, t.bo.caller, g.id, correction(t, g)),
     ]);
 
-    const won = responses.filter((r) => r.ok);
-    const lost = responses.filter((r) => !r.ok);
-    expect(won).toHaveLength(1);
-    expect(lost.map((r) => r.status)).toEqual([409]);
-    // Whichever ran first, the stored game is the one it answered with.
-    const winner = GameResponse.parse(await won[0]!.json()).game;
-    expect(await countedRevision(g.id)).toBe(winner.confirmedRevision?.id ?? null);
-    expect(await rows('game_revisions')).toBe(winner.openRevision ? 2 : 1);
+    expect(correctRes!.status).toBe(201);
+    const after = GameResponse.parse(await correctRes!.json()).game;
+    expect(after.openRevision!.number).toBe(2);
+    expect(await rows('game_revisions')).toBe(2);
+    if (confirmRes!.ok) {
+      expect(after).toMatchObject({ status: 'confirmed', confirmedRevision: { id: rid } });
+      expect(await countedRevision(g.id)).toBe(rid);
+    } else {
+      expect(confirmRes!.status).toBe(409);
+      expect((await errorOf(confirmRes!)).code).toBe('STALE_REVISION');
+      expect(after).toMatchObject({ status: 'pending', confirmedRevision: null });
+      expect(await countedRevision(g.id)).toBeNull();
+    }
+  });
+});
+
+describe('reopening a confirmed exhibition game', () => {
+  // The default game, confirmed by all four players at the clock's current time.
+  async function confirmedGame(t: Table): Promise<Game> {
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    return confirmed(t, t.di.caller, g);
+  }
+
+  // Each player still waiting on the open revision shown in `g` confirms it, in seat order.
+  async function confirmedByAll(t: Table, g: Game): Promise<Game> {
+    const waiting = [t.ana, t.bo, t.cy, t.di].filter((p) =>
+      g.openRevision!.players.some((s) => s.membershipId === p.membershipId && !s.confirmation),
+    );
+    let latest = g;
+    for (const p of waiting) latest = await confirmed(t, p.caller, g);
+    return latest;
+  }
+
+  it('opens a correction of the confirmed revision as the next revision, with a new window', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    clock.advance(DAY);
+
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(reopened).toMatchObject({
+      id: g.id,
+      status: 'confirmed',
+      windowExpiresAt: '2026-10-26T12:00:00.000Z',
+      confirmedRevision: g.confirmedRevision,
+    });
+    expect(reopened.openRevision).toMatchObject({
+      number: 2,
+      status: 'open',
+      createdBy: t.bo.membershipId,
+    });
+    expect(confirmationsOf(reopened)).toEqual([null, 'player', null, null]);
+  });
+
+  it('keeps counting the confirmed result while the correction is open', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+
+    await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(await countedRevision(g.id)).toBe(g.confirmedRevision!.id);
+    expect(await revisionStatus(g.confirmedRevision!.id)).toBe('confirmed');
+    expect(await pointsCounted(t.di.membershipId)).toEqual([4]);
+  });
+
+  it('counts the correction in place of the old result once all four confirm it', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    const final = await confirmedByAll(t, reopened);
+
+    expect(final).toMatchObject({ status: 'confirmed', openRevision: null, windowExpiresAt: null });
+    expect(final.confirmedRevision!.id).toBe(reopened.openRevision!.id);
+    expect(await revisionStatus(g.confirmedRevision!.id)).toBe('superseded');
+    expect(await pointsCounted(t.di.membershipId)).toEqual([3]);
+    expect(await rows('counted_results')).toBe(4);
+  });
+
+  it('puts the reopened game in the inbox of the other three players', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(await inbox(t, t.ana.caller)).toEqual([reopened]);
+    expect(await inbox(t, t.di.caller)).toEqual([reopened]);
+    expect(await inbox(t, t.bo.caller)).toEqual([]);
+  });
+
+  it("starts the new window from the league's setting at reopening", async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    expect((await patchLeague(t, 'settings', { confirmationWindowDays: 3 })).status).toBe(200);
+
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(reopened.windowExpiresAt).toBe('2026-10-21T12:00:00.000Z');
+  });
+
+  it('keeps the reopened window when the open correction is corrected again', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+    clock.advance(2 * DAY);
+
+    const again = await corrected(t, t.cy.caller, g.id, correction(t, reopened));
+
+    expect(again.windowExpiresAt).toBe(reopened.windowExpiresAt);
+    expect(again.openRevision!.number).toBe(3);
+    expect(again.confirmedRevision!.id).toBe(g.confirmedRevision!.id);
+    expect(await revisionStatus(reopened.openRevision!.id)).toBe('superseded');
+  });
+
+  it('checks a reopening against the rules snapshot, not rules edited since', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    expect((await patchLeague(t, 'rules', { targetScore: 21 })).status).toBe(200);
+
+    // 11–8 is a legal end only under the snapshot's target of 11.
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(reopened.openRevision!.ruleViolations).toEqual([]);
+  });
+
+  it('refuses a member who did not play with 403, even a commissioner', async () => {
+    const t = await table();
+    const ed = await member(t, 'ed@example.com', 'Ed');
+    const sides = {
+      A: { players: [line(ed, 6), line(t.bo, 5)] },
+      B: { players: [line(t.cy, 5), line(t.di, 4)] },
+    };
+    const g = await submitted(t, t.bo.caller, game(t, { sides }));
+    await confirmed(t, ed.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const c = await confirmed(t, t.di.caller, g);
+
+    const res = await correct(t, t.ana.caller, g.id, correction(t, c, { sides }));
+
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe('FORBIDDEN');
+    expect(await rows('game_revisions')).toBe(1);
+  });
+
+  it("gives 404 to a member of another league, even through their own league's path", async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const other = await league('Attic League', 'zed@example.com', 'Zed');
+
+    const res = await correct(other, other.commissioner, g.id, correction(t, g));
+
+    expect(res.status).toBe(404);
+    expect(await rows('game_revisions')).toBe(1);
+  });
+
+  it('accepts a reopening 1 s before the correction window closes', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    clock.advance(30 * DAY - SECOND);
+
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(reopened.openRevision!.number).toBe(2);
+  });
+
+  it('refuses a reopening with 409 WINDOW_CLOSED once the correction window has closed', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    clock.advance(15 * DAY);
+    // Bo uses the app meanwhile, so their session outlives the 30-day correction window.
+    await inbox(t, t.bo.caller);
+    clock.advance(15 * DAY);
+
+    const res = await correct(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await rows('game_revisions')).toBe(1);
+    expect(await countedRevision(g.id)).toBe(g.confirmedRevision!.id);
+  });
+
+  it('measures the correction window from when the game was first confirmed', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    clock.advance(20 * DAY);
+    const final = await confirmedByAll(t, await corrected(t, t.bo.caller, g.id, correction(t, g)));
+    clock.advance(10 * DAY);
+
+    const res = await correct(t, t.cy.caller, g.id, correction(t, final));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await countedRevision(g.id)).toBe(final.confirmedRevision!.id);
+  });
+
+  it('closes the correction window by the length the league has set at reopening', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    expect((await patchLeague(t, 'settings', { exhibitionCorrectionWindowDays: 10 })).status).toBe(
+      200,
+    );
+    clock.advance(10 * DAY);
+
+    const res = await correct(t, t.bo.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+  });
+
+  it('refuses a reopening while a correction of the confirmed result is open with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+
+    const res = await correct(t, t.cy.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
+    expect(await revisionStatus(reopened.openRevision!.id)).toBe('open');
+  });
+
+  it('refuses a reopening based on a result the confirmed one replaced with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    await confirmedByAll(t, await corrected(t, t.bo.caller, g.id, correction(t, g)));
+
+    const res = await correct(t, t.cy.caller, g.id, correction(t, g));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
+  });
+
+  it('keeps the old result counting when the correction expires unconfirmed', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+    clock.advance(7 * DAY);
+
+    const res = await confirm(t, t.ana.caller, g.id, reopened.openRevision!.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await storedStatus(g.id)).toBe('confirmed');
+    expect(await countedRevision(g.id)).toBe(g.confirmedRevision!.id);
+    expect(await pointsCounted(t.di.membershipId)).toEqual([4]);
+  });
+
+  it('has the sweep expire an unconfirmed correction, leaving the old result counting', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    const reopened = await corrected(t, t.bo.caller, g.id, correction(t, g));
+    clock.advance(7 * DAY);
+
+    expect(await sweepExpired({ db: api.db, clock })).toEqual({ expired: 1, done: true });
+
+    expect(await storedStatus(g.id)).toBe('confirmed');
+    expect(await revisionStatus(reopened.openRevision!.id)).toBe('expired');
+    expect(await countedRevision(g.id)).toBe(g.confirmedRevision!.id);
+  });
+
+  it('lets a player reopen the game again once a correction has expired', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+    await corrected(t, t.bo.caller, g.id, correction(t, g));
+    clock.advance(7 * DAY);
+
+    const again = await corrected(t, t.cy.caller, g.id, correction(t, g));
+
+    expect(again.openRevision).toMatchObject({ number: 3, createdBy: t.cy.membershipId });
+    expect(again.windowExpiresAt).toBe('2026-11-01T12:00:00.000Z');
+  });
+
+  it('accepts exactly one of two reopenings racing on the confirmed revision', async () => {
+    const t = await table();
+    const g = await confirmedGame(t);
+
+    const responses = await queuedOn(g.id, () => [
+      correct(t, t.bo.caller, g.id, correction(t, g)),
+      correct(t, t.di.caller, g.id, correction(t, g)),
+    ]);
+
+    expect(responses.map((r) => r.status).toSorted()).toEqual([201, 409]);
+    const loser = responses.find((r) => r.status === 409)!;
+    expect((await errorOf(loser)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
   });
 });
 
@@ -1731,6 +1998,25 @@ describe('revision emails', () => {
     for (const mail of sent) {
       expect(mail.subject).toBe('A corrected game is waiting for your confirmation');
       expect(mail.text).toContain('Bo corrected a game with you.');
+    }
+  });
+
+  it('mails the other players, naming the author, when a confirmed game is reopened', async () => {
+    const t = await quietTable();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await confirmed(t, t.cy.caller, g);
+    const c = await confirmed(t, t.di.caller, g);
+    await drain();
+    sent = [];
+
+    await corrected(t, t.cy.caller, g.id, correction(t, c));
+    await drain();
+
+    expect(recipients()).toEqual(['ana@example.com', 'bo@example.com', 'di@example.com']);
+    for (const mail of sent) {
+      expect(mail.subject).toBe('A corrected game is waiting for your confirmation');
+      expect(mail.text).toContain('Cy corrected a game with you.');
     }
   });
 

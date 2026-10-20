@@ -377,11 +377,12 @@ export async function submitGame(
   });
 }
 
-// A player of the game's open revision replaces it with a corrected result for the same four
-// players (SPEC §3.5). The correction is checked against the game's rules snapshot,
-// supersedes its base, and starts with only the author's confirmation, so the other players
-// confirm again. The window keeps running from first submission. A confirmed game can't be
-// corrected yet: reopening one arrives in a later slice.
+// A player of the game corrects its open revision, or, when nothing is open, its confirmed
+// revision, which reopens the game (SPEC §3.5). Either way the result is for the same four
+// players, is checked against the game's rules snapshot, and starts with only the author's
+// confirmation, so the other players confirm again. A correction of the open revision
+// supersedes it and keeps the window running. A reopening starts a new window and leaves the
+// confirmed revision counting until its correction confirms.
 export async function correctGame(
   deps: WriteDeps,
   actor: Actor,
@@ -410,7 +411,9 @@ export async function correctGame(
       throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can correct it');
     }
     if (base.status === 'expired') throw windowClosed('correct');
-    if (game.openRevisionId !== baseId) throw staleRevision('corrected');
+    const reopening = game.openRevisionId === null && game.confirmedRevisionId === baseId;
+    if (!reopening && game.openRevisionId !== baseId) throw staleRevision('corrected');
+    if (reopening) await reopenGame(tx, actor, game, now);
 
     const rules = LeagueRules.parse(game.rulesSnapshot);
     const result = await checkResult(tx, actor, rules, body, now, roster);
@@ -420,13 +423,33 @@ export async function correctGame(
       .where(eq(gameRevisions.gameId, game.id));
     if (!latest?.number) throw new Error('game has no revisions');
 
-    await tx
-      .update(gameRevisions)
-      .set({ status: 'superseded' })
-      .where(eq(gameRevisions.id, baseId));
+    // A confirmed base keeps counting; settleRevision supersedes it once its correction
+    // confirms.
+    if (!reopening) {
+      await tx
+        .update(gameRevisions)
+        .set({ status: 'superseded' })
+        .where(eq(gameRevisions.id, baseId));
+    }
     await openRevision(tx, actor, game.id, latest.number + 1, result, now, deps.config.appOrigin);
     return loadGame(tx, game.id);
   });
+}
+
+// Opens a new window on a confirmed game, from the league's current setting. An exhibition
+// game reopens only while `now < confirmed_at + exhibition_correction_window_days`, both as
+// they stand now. Season games arrive with seasons (SPEC §3.10, slice 5); until their rule
+// does, none reopens.
+async function reopenGame(tx: Tx, actor: Actor, game: GameRow, now: Date): Promise<void> {
+  const [league] = await tx.select().from(leagues).where(eq(leagues.id, actor.leagueId));
+  if (!league) throw new Error('league of a resolved membership is missing');
+  if (!game.confirmedAt) throw new Error('confirmed game has no confirmation time');
+  const closesAt = game.confirmedAt.getTime() + league.exhibitionCorrectionWindowDays * DAY_MS;
+  if (game.kind !== 'exhibition' || now.getTime() >= closesAt) throw windowClosed('reopen');
+  await tx
+    .update(games)
+    .set({ windowExpiresAt: new Date(now.getTime() + league.confirmationWindowDays * DAY_MS) })
+    .where(eq(games.id, game.id));
 }
 
 // The start of every write to an existing game: its row, locked FOR UPDATE until the
@@ -516,9 +539,10 @@ export async function sweepExpired(
 // THE confirmation transition (SPEC §3.4), and the only code that confirms a revision. The
 // game's open revision confirms once each of its four players has a confirmation and, if it
 // breaks the rules, a commissioner has approved an override; it then becomes the revision
-// stats read. Call it under the game row lock after any change that could complete the
-// open revision. Until then it changes nothing.
-async function settleRevision(tx: Tx, game: GameRow): Promise<void> {
+// stats read, superseding the one a reopened game counted until now. `confirmed_at` records
+// only the first time the game counts. Call it under the game row lock after any change that
+// could complete the open revision. Until then it changes nothing.
+async function settleRevision(tx: Tx, game: GameRow, now: Date): Promise<void> {
   const revisionId = game.openRevisionId;
   if (!revisionId) return;
   const [revision] = await tx
@@ -549,11 +573,18 @@ async function settleRevision(tx: Tx, game: GameRow): Promise<void> {
     .update(gameRevisions)
     .set({ status: 'confirmed' })
     .where(eq(gameRevisions.id, revisionId));
+  if (game.confirmedRevisionId) {
+    await tx
+      .update(gameRevisions)
+      .set({ status: 'superseded' })
+      .where(eq(gameRevisions.id, game.confirmedRevisionId));
+  }
   await tx
     .update(games)
     .set({
       status: 'confirmed',
       confirmedRevisionId: revisionId,
+      confirmedAt: game.confirmedAt ?? now,
       openRevisionId: null,
       windowExpiresAt: null,
     })
@@ -606,7 +637,7 @@ export async function confirmRevision(
       kind: 'player',
       createdAt: now,
     });
-    await settleRevision(tx, game);
+    await settleRevision(tx, game, now);
     return loadGame(tx, game.id);
   });
 }
