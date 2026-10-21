@@ -4,6 +4,7 @@ import {
   type SeasonResponse,
   type SeasonsResponse,
   StandingsConfigBody,
+  type StandingsResponse,
 } from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
@@ -16,6 +17,7 @@ import {
   updateStandingsConfig,
 } from '../domain/seasons.ts';
 import { idParam, readJson } from '../http.ts';
+import { getStandings } from '../stats/queries.ts';
 
 // Mounted inside leagueRoutes, which has already resolved the caller's membership.
 export function seasonRoutes(deps: AppDeps) {
@@ -48,5 +50,9 @@ export function seasonRoutes(deps: AppDeps) {
         patch,
       );
       return c.json({ season } satisfies SeasonResponse);
+    })
+    .get('/seasons/:sid/standings', async (c) => {
+      const standings = await getStandings(deps.db, c.get('membership')!, idParam(c, 'sid'));
+      return c.json(standings satisfies StandingsResponse);
     });
 }

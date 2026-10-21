@@ -155,6 +155,13 @@ function SeasonCard({ leagueId, season, commissioner }: CardProps) {
       >
         Teams
       </Link>
+      <Link
+        href={{ pathname: '/standings/[sid]', params: { sid: season.id } }}
+        testID="season-standings-link"
+        style={styles.link}
+      >
+        Standings
+      </Link>
       <Text>Ranked by {describeOrder(season.standingsConfig.order)}</Text>
       <Text>Minimum games to be ranked: {season.standingsConfig.minGames}</Text>
 

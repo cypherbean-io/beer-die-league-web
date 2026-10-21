@@ -1,4 +1,4 @@
-import type { StandingsMetric } from '@beer-die/core';
+import type { StandingsMetric, StandingsRow } from '@beer-die/core';
 
 export const METRIC_LABELS: Record<StandingsMetric, string> = {
   win_pct: 'Win %',
@@ -11,3 +11,7 @@ export const METRIC_LABELS: Record<StandingsMetric, string> = {
 
 export const describeOrder = (order: StandingsMetric[]) =>
   order.map((metric) => METRIC_LABELS[metric]).join(', ');
+
+// "1", or "T-2" for teams sharing a rank; a dash for a team without one.
+export const rankLabel = (row: StandingsRow) =>
+  row.rank === null ? '–' : row.tied ? `T-${row.rank}` : String(row.rank);

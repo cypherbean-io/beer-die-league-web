@@ -28,6 +28,7 @@ import {
   SeasonsResponse,
   type SettingsBody,
   type StandingsConfigBody,
+  StandingsResponse,
   type StatsScope,
   type SubmitGameBody,
   type Team,
@@ -287,6 +288,11 @@ export async function updateStandingsConfig(
   const res = await sendJson('PATCH', seasonPath(leagueId, seasonId, 'standings-config'), patch);
   if (!res.ok) throw await failure(res);
   return SeasonResponse.parse(await res.json()).season;
+}
+
+// The season's approved teams, ranked by its standings config, with the season itself.
+export async function getStandings(leagueId: string, seasonId: string): Promise<StandingsResponse> {
+  return getJson(seasonPath(leagueId, seasonId, 'standings'), StandingsResponse);
 }
 
 // Every team in the season, by name.

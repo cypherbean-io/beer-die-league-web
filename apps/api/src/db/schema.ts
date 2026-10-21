@@ -536,25 +536,29 @@ export const confirmations = pgTable(
 // confirmed revision and nothing else, so a game counts only once all four players (and, for a
 // rule-breaking result, a commissioner) have signed off. There are no stored counters to drift.
 // The partner is the other player on the same side of that revision, the one who actually
-// played; each side has exactly two players. Season, team, and opponent columns arrive with
-// the slices that read them.
+// played; each side has exactly two players. In a season game, the season and the team are
+// the confirmed revision's own, so a later roster edit never moves a counted result; both are
+// null in an exhibition game. The opponent column arrives with the slice that reads it.
 export const countedResults = pgView('counted_results', {
   leagueId: uuid('league_id').notNull(),
   gameId: uuid('game_id').notNull(),
   kind: text('kind', { enum: ['season', 'exhibition'] }).notNull(),
   revisionId: uuid('revision_id').notNull(),
   playedAt: ts('played_at').notNull(),
+  seasonId: uuid('season_id'),
   membershipId: uuid('membership_id').notNull(),
   side: text('side', { enum: ['A', 'B'] }).notNull(),
   partnerMembershipId: uuid('partner_membership_id').notNull(),
+  teamId: uuid('team_id'),
   isSub: boolean('is_sub').notNull(),
   won: boolean('won').notNull(),
   points: integer('points').notNull(),
   sinks: integer('sinks').notNull(),
 }).as(sql`
-  select g.league_id, g.id as game_id, g.kind, r.id as revision_id, r.played_at,
-         p.membership_id, p.side, q.membership_id as partner_membership_id, p.is_sub,
-         p.side = r.winner as won, p.points, p.sinks
+  select g.league_id, g.id as game_id, g.kind, r.id as revision_id, r.played_at, r.season_id,
+         p.membership_id, p.side, q.membership_id as partner_membership_id,
+         case p.side when 'A' then r.side_a_team_id else r.side_b_team_id end as team_id,
+         p.is_sub, p.side = r.winner as won, p.points, p.sinks
   from games g
   join game_revisions r on r.id = g.confirmed_revision_id and r.game_id = g.id
   join revision_players p on p.revision_id = r.id
