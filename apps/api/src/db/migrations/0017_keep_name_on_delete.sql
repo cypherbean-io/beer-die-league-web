@@ -1,0 +1,1 @@
+ALTER TABLE "memberships" ADD COLUMN "keep_name_on_delete" boolean DEFAULT false NOT NULL;

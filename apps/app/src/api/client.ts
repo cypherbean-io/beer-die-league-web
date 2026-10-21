@@ -120,6 +120,11 @@ export async function logout(): Promise<void> {
   if (!res.ok && res.status !== 401) throw await failure(res);
 }
 
+// Revokes every session, so the caller is signed out afterwards.
+export async function deleteAccount(keepDisplayName: boolean): Promise<void> {
+  await expectOk(await sendJson('DELETE', '/api/me', { keepDisplayName }));
+}
+
 export async function joinLeague(token: string, displayName: string): Promise<MyMembership> {
   const res = await postJson(`/api/invites/${encodeURIComponent(token)}/join`, { displayName });
   if (!res.ok) throw await failure(res);

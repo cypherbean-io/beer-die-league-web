@@ -97,6 +97,16 @@ export async function joinLeague(
   if (!TOKEN_PATTERN.test(input.token)) throw invalid;
 
   return deps.db.transaction(async (tx) => {
+    // FOR SHARE holds the account until this commits, so an account deletion
+    // (domain/departures.ts) either waits for the join and deletes its membership, or has
+    // already marked the account deleted and the join is refused.
+    const [account] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, input.userId), isNull(users.deletedAt)))
+      .for('share');
+    if (!account) throw new ApiError(401, 'UNAUTHENTICATED', 'Sign in to continue');
+
     const [invite] = await tx
       .select({ leagueId: invites.leagueId })
       .from(invites)
