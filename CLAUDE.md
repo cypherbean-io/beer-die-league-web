@@ -35,12 +35,14 @@ it.
 | New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL |
 | Dev sign-in codes | Mailpit UI at `http://localhost:8025` (the worker delivers them within a few seconds) |
 | Test (all) | `npm test` (core unit tests + API integration tests; needs `db` running) |
+| Test (stack) | `npm run test:stack`: Caddy, the API behind it, and backups, against the whole stack. Bring it up first with `npm run stack -- build && npm run stack -- up -d --wait db mailpit migrate api worker web`. |
 | Test (single file) | `npx vitest run <path/to/file.test.ts>` |
 | Lint | `npm run lint` (ESLint, then `prettier --check`) |
 | Format | `npm run format` |
 | Typecheck | `npm run typecheck` (root scripts, then every workspace) |
-| Build | `npm run build` (`expo export --platform web` into `apps/app/dist`; the API has no build step) |
-| Verify (all checks) | `npm run verify`: services up, then typecheck, lint, test, and build |
+| Build | `npm run build` (`expo export --platform web` into `apps/app/dist`; the API has no build step). The `web` image runs it too. |
+| Verify (all checks) | `npm run verify`: builds the images, brings the whole stack up with `compose.test.yaml`, then typecheck, lint, test, and stack tests |
+| Production | `docker compose -f compose.yaml up -d --build --wait`, with the variables listed at the top of `compose.yaml` in `.env`. Bootstrap with `docker compose -f compose.yaml exec api node src/cli.ts create-league …`. |
 | Bootstrap a league | `DATABASE_URL=postgres://postgres@127.0.0.1:5432/beerdie npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` (after Migrate). Prints the new ids only. `promote-commissioner --league-id … --email …` recovers a league with no commissioner. |
 
 > **Not wired yet.** These come from SPEC.md and land in later delivery slices. Move each
@@ -49,7 +51,7 @@ it.
 > | Task | Command | Lands in |
 > | --- | --- | --- |
 > | E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` | slice 8 |
-> | Full `verify` | SPEC.md §6: the whole Compose stack plus E2E | slice 8 |
+> | Full `verify` | SPEC.md §6 step 4: E2E after the stack tests | slice 8 |
 
 Prefer running a single test file over the whole suite while iterating.
 
@@ -184,3 +186,12 @@ Prefer running a single test file over the whole suite while iterating.
   `FixedClock`.
 - The CSP allows inline styles because react-native-web needs them. Don't tighten that
   away.
+- A bare `docker compose …` also loads `compose.override.yaml`, which is dev-only (trust
+  auth, loopback Postgres). Production must pass `-f compose.yaml`. Production is its own
+  Compose project (`beer-die-league`), so dev and test commands never touch its containers
+  or volumes, and its Postgres auth comes from the committed `ops/pg_hba.conf`, never from
+  the data volume.
+- In production the API and worker connect as `beerdie_app`, with no UPDATE or DELETE on
+  `audit_events`, and backups dump as the read-only `beerdie_backup`. `migrate` provisions
+  both after every migration. Dev and tests connect as the owner, so a missing grant shows
+  up only in `app-role.test.ts` or the stack.

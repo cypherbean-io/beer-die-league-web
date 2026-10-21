@@ -1,0 +1,47 @@
+# Test overrides for the whole stack, applied by `npm run stack -- …` (scripts/stack.ts),
+# which `npm run verify` uses (SPEC §6). Postgres is set up as in dev (trust, loopback) and
+# shared with `npm test` on the host; everything else runs its production image, with its
+# ports on loopback only. scripts/stack.ts supplies throwaway AUTH_SECRET, APP_DB_PASSWORD,
+# and BACKUP_DB_PASSWORD values, so no secret is committed.
+
+# Not production's project: dev and tests get their own containers and volumes. The name
+# is the one dev has always had (the checkout's directory), so existing dev data carries over.
+name: beer-die-league-web
+
+services:
+  db:
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - ./ops/pg_hba.dev.conf:/etc/postgresql/pg_hba.conf:ro
+
+  # Their own tags, so building here never replaces an image production runs.
+  migrate:
+    image: beer-die-league-web/api
+    environment:
+      DATABASE_URL: postgres://postgres@db:5432/beerdie
+
+  api:
+    image: beer-die-league-web/api
+    environment: &test-env
+      APP_ORIGIN: https://localhost
+      SMTP_URL: smtp://mailpit:1025?ignoreTLS=true
+      MAIL_FROM: Beer Die League <no-reply@beerdie.localhost>
+
+  worker:
+    image: beer-die-league-web/api
+    environment: *test-env
+
+  web:
+    image: beer-die-league-web/web
+    environment:
+      APP_ORIGIN: https://localhost
+    ports: !override
+      - '127.0.0.1:80:80'
+      - '127.0.0.1:443:443'
+      - '127.0.0.1:443:443/udp'
+
+  backup:
+    image: beer-die-league-web/backup

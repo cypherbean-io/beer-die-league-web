@@ -31,3 +31,19 @@ describe('loadConfig SMTP_URL', () => {
     expect(loadConfig({ ...base, SMTP_URL: url }).smtpUrl).toBe(url);
   });
 });
+
+describe('loadConfig TRUST_PROXY', () => {
+  const env = { ...base, SMTP_URL: 'smtp://127.0.0.1:1025' };
+
+  it('trusts no proxy header unless TRUST_PROXY is set', () => {
+    expect(loadConfig(env).trustProxy).toBe(false);
+  });
+
+  it('trusts the proxy-appended X-Forwarded-For when TRUST_PROXY=true', () => {
+    expect(loadConfig({ ...env, TRUST_PROXY: 'true' }).trustProxy).toBe(true);
+  });
+
+  it('rejects a TRUST_PROXY value other than true or false', () => {
+    expect(() => loadConfig({ ...env, TRUST_PROXY: 'yes' })).toThrow(/TRUST_PROXY/);
+  });
+});

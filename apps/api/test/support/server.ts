@@ -20,7 +20,7 @@ export type TestApi = {
 // lines are captured instead of printed.
 export async function startApi(
   databaseUrl: string,
-  opts: { clock?: Clock } = {},
+  opts: { clock?: Clock; trustProxy?: boolean } = {},
 ): Promise<TestApi> {
   const { db, close } = createDb(databaseUrl);
   const logs: LogEntry[] = [];
@@ -29,7 +29,7 @@ export async function startApi(
   const app = createApp({
     db,
     clock: opts.clock ?? systemClock,
-    config: { authSecret, appOrigin: APP_ORIGIN },
+    config: { authSecret, appOrigin: APP_ORIGIN, trustProxy: opts.trustProxy ?? false },
     log,
   });
   const server = await new Promise<ServerType>((resolve) => {

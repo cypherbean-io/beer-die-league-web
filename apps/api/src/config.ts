@@ -31,6 +31,9 @@ const Env = z.object({
       'must be smtps://, set requireTLS=true, point at loopback, or opt out with ignoreTLS=true',
     ),
   MAIL_FROM: z.string().min(1),
+  // Set only where every request arrives through a proxy that sets X-Forwarded-For itself,
+  // as Caddy does in compose.yaml. Anywhere else a client could forge its address.
+  TRUST_PROXY: z.enum(['true', 'false']).default('false'),
 });
 
 export type Config = {
@@ -39,6 +42,7 @@ export type Config = {
   appOrigin: string;
   smtpUrl: string;
   mailFrom: string;
+  trustProxy: boolean;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
@@ -57,5 +61,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     appOrigin: new URL(e.APP_ORIGIN).origin,
     smtpUrl: e.SMTP_URL,
     mailFrom: e.MAIL_FROM,
+    trustProxy: e.TRUST_PROXY === 'true',
   };
 }

@@ -1,0 +1,39 @@
+# Dev only. A bare `docker compose …` loads this on top of compose.yaml, so the CLAUDE.md
+# commands work as before: Postgres trusts every connection and listens on loopback for the
+# host-run API and tests, and migrate runs the host checkout (read-only), so a new migration
+# applies without rebuilding an image. Production runs `-f compose.yaml`, which skips it.
+
+# Not production's project: dev and tests get their own containers and volumes. The name
+# is the one dev has always had (the checkout's directory), so existing dev data carries over.
+name: beer-die-league-web
+
+services:
+  db:
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - ./ops/pg_hba.dev.conf:/etc/postgresql/pg_hba.conf:ro
+
+  migrate:
+    build: !reset null
+    image: node:26-alpine
+    working_dir: /repo/apps/api
+    environment:
+      DATABASE_URL: postgres://postgres@db:5432/beerdie
+      # The host-run API connects as the owner, so there are no roles to provision.
+      APP_DATABASE_URL: ''
+      BACKUP_DATABASE_URL: ''
+    volumes:
+      - .:/repo:ro
+
+  # Their own tags, so building here never replaces an image production runs.
+  api:
+    image: beer-die-league-web/api
+  worker:
+    image: beer-die-league-web/api
+  web:
+    image: beer-die-league-web/web
+  backup:
+    image: beer-die-league-web/backup
