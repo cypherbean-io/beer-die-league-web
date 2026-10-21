@@ -237,6 +237,16 @@ export async function setMemberRole(
   await expectOk(await postJson(memberPath(leagueId, membershipId, 'role'), { role }));
 }
 
+// Commissioners only. Voids the open games the member plays in and takes them off their teams.
+export async function removeMember(leagueId: string, membershipId: string): Promise<void> {
+  await expectOk(await postJson(memberPath(leagueId, membershipId, 'remove'), {}));
+}
+
+// Voids my open games and takes me off my teams. The last commissioner can't leave.
+export async function leaveLeague(leagueId: string): Promise<void> {
+  await expectOk(await postJson(`${leaguePath(leagueId)}/leave`, {}));
+}
+
 export async function createInvite(leagueId: string): Promise<CreateInviteResponse> {
   const res = await postJson(`${leaguePath(leagueId)}/invites`, {});
   if (!res.ok) throw await failure(res);

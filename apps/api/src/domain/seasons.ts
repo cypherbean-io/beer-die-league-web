@@ -16,7 +16,9 @@ import { type Actor, assertCommissioner } from './membership.ts';
 //
 // Lock order: a commissioner's edit takes the league row, then the season row; a game write
 // takes the game row, then the season row. Nothing takes a league or game lock while holding
-// a season lock, so the two paths can't deadlock. Season rows are locked FOR NO KEY UPDATE,
+// a season lock, so the two paths can't deadlock. The writes that lock more than one season,
+// a departure (domain/departures.ts) and the expiry sweep, lock them in id order. Season rows
+// are locked FOR NO KEY UPDATE,
 // which a status change needs, and which leaves foreign-key checks on the season unblocked.
 // Submitting a season game, or reopening one, holds its season FOR SHARE instead, until it
 // commits: the season can't end, and its teams can't change, under the game, and that write
@@ -156,15 +158,16 @@ export async function finalizeIfSettled(tx: Tx, season: SeasonRow, now: Date): P
 // serializes these checks: when two of an ended season's last games close at once, or one
 // closes while the season is being ended, whichever checks second sees what the first
 // committed, so the season always finalizes. The caller's own game lock doesn't hide any of
-// its games from finalizeIfSettled, since a transaction never waits on its own locks.
-export async function settleSeason(tx: Tx, seasonId: string, now: Date): Promise<void> {
+// its games from finalizeIfSettled, since a transaction never waits on its own locks. Returns
+// the season as it stands, still locked.
+export async function settleSeason(tx: Tx, seasonId: string, now: Date): Promise<SeasonRow> {
   const [season] = await tx
     .select()
     .from(seasons)
     .where(eq(seasons.id, seasonId))
     .for('no key update');
   if (!season) throw new Error('season of a season game is missing');
-  await finalizeIfSettled(tx, season, now);
+  return finalizeIfSettled(tx, season, now);
 }
 
 // Makes a draft season the league's active one. Starting the active season again returns it
