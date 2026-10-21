@@ -1,15 +1,57 @@
+# The whole stack (SPEC §3.9): Postgres, migrations, the API and worker, Caddy serving the
+# web app, and nightly backups. Mailpit is for dev and tests only.
+#
+# Production runs `docker compose -f compose.yaml …`, so the dev-only compose.override.yaml
+# is skipped, with these in an untracked .env beside this file:
+#   POSTGRES_PASSWORD   the Postgres superuser's; only migrate uses it
+#   APP_DB_PASSWORD     the beerdie_app role's, which the API and worker connect as
+#   BACKUP_DB_PASSWORD  the beerdie_backup role's, which backup dumps with (read-only)
+#   AUTH_SECRET, APP_ORIGIN, SMTP_URL, MAIL_FROM   as in .env.example
+# The passwords go into connection URLs, so generate them URL-safe, the way .env.example
+# shows for AUTH_SECRET. compose.test.yaml is the variant `npm run verify` runs.
+
+# Dev and tests run as another project (see compose.override.yaml), so they never share a
+# container or volume with production, even on one host.
+name: beer-die-league
+
+x-logging: &logging # JSON lines on stdout, rotated by Docker.
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '5'
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  read_only: true
+
+x-api-image: &api-image
+  build: { context: ., target: api }
+  image: beer-die-league/api
+  init: true
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://beerdie_app:${APP_DB_PASSWORD:-}@db:5432/beerdie
+  AUTH_SECRET: ${AUTH_SECRET:-}
+  APP_ORIGIN: ${APP_ORIGIN:-}
+  SMTP_URL: ${SMTP_URL:-}
+  MAIL_FROM: ${MAIL_FROM:-}
+
 services:
   db:
+    <<: *logging
     image: postgres:18-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: beerdie
-      # Dev/test only: no password, and the port is bound to loopback. The production
-      # setup (delivery slice 8) replaces this with a secret.
-      POSTGRES_HOST_AUTH_METHOD: trust
-    ports:
-      - '127.0.0.1:5432:5432'
+      # Left empty, the image refuses to initialize the volume, so a missing secret is loud.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    # Client auth comes from the repo, never from whatever the data volume holds.
+    command: ['postgres', '-c', 'hba_file=/etc/postgresql/pg_hba.conf']
     volumes:
       - db-data:/var/lib/postgresql
+      - ./ops/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres -d beerdie']
       interval: 2s
@@ -17,6 +59,9 @@ services:
       retries: 30
 
   mailpit:
+    <<: *logging
+    # Dev and tests only: the profile keeps it out of a bare `up`, and naming it starts it.
+    profiles: [dev]
     image: axllent/mailpit:v1.31
     ports:
       - '127.0.0.1:1025:1025'
@@ -27,19 +72,104 @@ services:
       timeout: 3s
       retries: 30
 
-  # One-shot: applies the committed migrations. Dev/test only: it runs the host checkout
-  # (and its node_modules) read-only; delivery slice 8 switches it to the API image.
+  # One-shot: applies the committed migrations, then provisions the app and backup roles.
   migrate:
-    image: node:26-alpine
-    working_dir: /repo/apps/api
+    <<: [*api-image, *hardening, *logging]
     command: ['node', 'src/db/migrate.ts']
     environment:
-      DATABASE_URL: postgres://postgres@db:5432/beerdie
-    volumes:
-      - .:/repo:ro
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-}@db:5432/beerdie
+      APP_DATABASE_URL: postgres://beerdie_app:${APP_DB_PASSWORD:-}@db:5432/beerdie
+      BACKUP_DATABASE_URL: postgres://beerdie_backup:${BACKUP_DB_PASSWORD:-}@db:5432/beerdie
     depends_on:
       db:
         condition: service_healthy
 
+  api:
+    <<: [*api-image, *hardening, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      # Only Caddy can reach the API, and Caddy sets X-Forwarded-For itself.
+      TRUST_PROXY: 'true'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: [*api-image, *hardening, *logging]
+    restart: unless-stopped
+    command: ['node', 'src/worker.ts']
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    <<: [*hardening, *logging]
+    build: { context: ., target: web }
+    image: beer-die-league/web
+    restart: unless-stopped
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    # Lets Caddy, unprivileged and without capabilities, bind ports 80 and 443.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    tmpfs: [/tmp]
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    # A request to the site itself, so it passes only once the certificate is in place.
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsSk -o /dev/null --connect-to ::127.0.0.1: "$$APP_ORIGIN/"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      api:
+        condition: service_healthy
+
+  backup:
+    <<: [*hardening, *logging]
+    build: { context: ., target: backup }
+    image: beer-die-league/backup
+    init: true
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: beerdie_backup
+      PGPASSWORD: ${BACKUP_DB_PASSWORD:-}
+      PGDATABASE: beerdie
+    volumes:
+      - db-backups:/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+networks:
+  default:
+    # Without it, Docker relays IPv6 clients through docker-proxy, so Caddy would see them all
+    # as one address (the bridge gateway) and they would share one sign-in rate limit.
+    enable_ipv6: true
+
 volumes:
   db-data:
+  db-backups:
+  caddy-data:
+  caddy-config:

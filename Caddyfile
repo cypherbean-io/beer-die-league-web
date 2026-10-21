@@ -1,0 +1,42 @@
+# Serves the exported web app and proxies /api to the API on the same origin (SPEC §3.9).
+# The site address is APP_ORIGIN: a public domain gets its certificate over ACME, and
+# https://localhost gets one from Caddy's own local CA.
+{
+	# The container has no trust store to install that local CA into.
+	skip_install_trust
+
+	# There is deliberately no access log: paths carry invite tokens and requests carry
+	# client addresses. Handler errors would log both, so they are dropped too.
+	log default {
+		exclude http.log.error
+	}
+}
+
+{$APP_ORIGIN} {
+	encode zstd gzip
+
+	# Deferred, so they also replace any the API sets. Inline styles are for
+	# react-native-web.
+	header {
+		defer
+		Content-Security-Policy "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+
+	# Not for localhost: HSTS ignores ports, so it would force every local dev server to HTTPS.
+	@public not host localhost
+	header @public Strict-Transport-Security "max-age=31536000"
+
+	# Caddy sets X-Forwarded-For to the client's address and ignores any the client sent.
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	# Client-side routes, invite links included, all load the app shell.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

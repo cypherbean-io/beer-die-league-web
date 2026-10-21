@@ -1,0 +1,25 @@
+# Secrets never enter a build context, at any depth.
+**/.env
+**/.env.*
+**/secrets/
+**/*.pem
+**/*.key
+
+# Installed or built inside the image.
+**/node_modules/
+**/dist/
+**/.expo/
+*.tsbuildinfo
+
+# Not shipped in any image.
+.git/
+.github/
+.claude/
+docs/
+e2e/
+apps/api/test/
+ops/test/
+**/*.test.ts
+coverage/
+playwright-report/
+test-results/

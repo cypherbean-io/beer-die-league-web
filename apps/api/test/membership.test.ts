@@ -939,7 +939,7 @@ describe('tenancy', () => {
     const app = createApp({
       db: api.db,
       clock,
-      config: { authSecret: api.authSecret, appOrigin: APP_ORIGIN },
+      config: { authSecret: api.authSecret, appOrigin: APP_ORIGIN, trustProxy: false },
       log: () => {},
     });
 

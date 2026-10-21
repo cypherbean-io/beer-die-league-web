@@ -1,3 +1,4 @@
+import { isIPv6 } from 'node:net';
 import { sql } from 'drizzle-orm';
 import { hmacHex } from '../crypto.ts';
 import type { Db } from '../db/client.ts';
@@ -12,6 +13,39 @@ export type RateLimitKind =
   | 'game-write'
   | 'season-create'
   | 'team-propose';
+
+// The eight 16-bit groups of a valid IPv6 address, `::` and a dotted IPv4 tail expanded.
+function ipv6Groups(ip: string): number[] {
+  const parse = (part: string | undefined): number[] =>
+    part
+      ? part.split(':').flatMap((group) => {
+          if (!group.includes('.')) return [parseInt(group, 16)];
+          const [a, b, c, d] = group.split('.').map(Number) as [number, number, number, number];
+          return [(a << 8) | b, (c << 8) | d];
+        })
+      : [];
+  const [head, tail] = ip.split('::');
+  const before = parse(head);
+  if (tail === undefined) return before;
+  const after = parse(tail);
+  return [...before, ...new Array<number>(8 - before.length - after.length).fill(0), ...after];
+}
+
+// The address a per-address limit counts. One subscriber usually holds a whole IPv6 /64, so
+// counting single addresses would let them rotate past the limit; an IPv4-mapped address
+// counts as its IPv4 address.
+export function rateLimitAddress(ip: string): string {
+  const bare = ip.split('%')[0]!;
+  if (!isIPv6(bare)) return ip;
+  const g = ipv6Groups(bare);
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
+    return [g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff].join('.');
+  }
+  return `${g
+    .slice(0, 4)
+    .map((x) => x.toString(16))
+    .join(':')}::/64`;
+}
 
 // The stored key is an HMAC, so neither the email nor the IP is kept in the clear.
 export function rateLimitKey(secret: string, kind: RateLimitKind, value: string): string {

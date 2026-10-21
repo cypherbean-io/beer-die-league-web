@@ -12,12 +12,14 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.ts",
-    "test": "vitest run",
+    "test": "vitest run --project core --project api",
+    "test:stack": "vitest run --project stack",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc -p . && npm run typecheck --workspaces",
     "build": "npm run build -w apps/app",
-    "verify": "docker compose up -d --wait db mailpit && npm run typecheck && npm run lint && npm test && npm run build"
+    "stack": "node scripts/stack.ts",
+    "verify": "npm run stack -- build && npm run stack -- up -d --wait db mailpit migrate api worker web && npm run typecheck && npm run lint && npm test && npm run test:stack"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

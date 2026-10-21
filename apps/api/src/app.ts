@@ -16,7 +16,7 @@ import { meRoutes } from './routes/me.ts';
 export type AppDeps = {
   db: Db;
   clock: Clock;
-  config: { authSecret: string; appOrigin: string };
+  config: { authSecret: string; appOrigin: string; trustProxy: boolean };
   log: Log;
 };
 
