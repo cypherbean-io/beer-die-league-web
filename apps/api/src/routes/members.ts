@@ -2,6 +2,7 @@ import { EmptyBody, type MemberResponse, type MembersResponse, RoleBody } from '
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
 import type { LeagueEnv } from '../auth/middleware.ts';
+import { leaveLeague, removeMember } from '../domain/departures.ts';
 import { approveMember, listMembers, rejectMember, setRole } from '../domain/membership.ts';
 import { idParam, readJson } from '../http.ts';
 
@@ -26,5 +27,15 @@ export function memberRoutes(deps: AppDeps) {
       const { role } = await readJson(c, RoleBody);
       const member = await setRole(deps.db, c.get('membership')!, idParam(c, 'mid'), role);
       return c.json({ member } satisfies MemberResponse);
+    })
+    .post('/members/:mid/remove', async (c) => {
+      await readJson(c, EmptyBody);
+      const member = await removeMember(deps, c.get('membership')!, idParam(c, 'mid'));
+      return c.json({ member } satisfies MemberResponse);
+    })
+    .post('/leave', async (c) => {
+      await readJson(c, EmptyBody);
+      await leaveLeague(deps, c.get('membership')!);
+      return c.body(null, 204);
     });
 }

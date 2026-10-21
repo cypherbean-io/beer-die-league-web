@@ -1,5 +1,5 @@
 import { nameKey, Team } from '@beer-die/core';
-import { and, asc, count, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, ne, or, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import type { Clock } from '../clock.ts';
@@ -199,7 +199,10 @@ function assertForming(season: SeasonRow): void {
 
 // Which of `ids` aren't approved members of the caller's league. FOR SHARE holds the rest as
 // approved until the write commits, so a concurrent removal waits for it and then sees the
-// roster row it has to close.
+// roster row it has to close. A member's own write takes this before the season lock: a
+// departure (domain/departures.ts) takes the member's row and then the season, so a write
+// that waited for the season while holding a membership could deadlock with it. A
+// commissioner's write holds the league lock first, which a departure also takes first.
 async function strangers(tx: Tx, actor: Actor, ids: string[]): Promise<string[]> {
   const approved = await tx
     .select({ id: memberships.id })
@@ -282,6 +285,7 @@ export async function proposeTeam(
   const partnerId = body.partnerId.toLowerCase();
 
   return deps.db.transaction(async (tx) => {
+    const missing = await strangers(tx, actor, [actor.id, partnerId]);
     const season = await lockSeason(tx, actor, seasonId);
     assertForming(season);
     if (partnerId === actor.id) {
@@ -289,7 +293,6 @@ export async function proposeTeam(
         { path: ['partnerId'], message: 'Choose someone else' },
       ]);
     }
-    const missing = await strangers(tx, actor, [actor.id, partnerId]);
     // The caller was removed after the request was authorized.
     if (missing.includes(actor.id)) throw notFound();
     if (missing.length > 0) {
@@ -355,6 +358,7 @@ export async function proposeTeam(
 export async function acceptTeam(deps: Deps, actor: Actor, teamId: string): Promise<Team> {
   const now = deps.clock.now();
   return deps.db.transaction(async (tx) => {
+    const missing = await strangers(tx, actor, [actor.id]);
     const { season, team } = await lockTeam(tx, actor, teamId);
     if (actor.id !== team.partnerId) {
       throw new ApiError(403, 'FORBIDDEN', 'Only the partner asked to join can accept a team');
@@ -365,7 +369,7 @@ export async function acceptTeam(deps: Deps, actor: Actor, teamId: string): Prom
       throw new ApiError(409, 'TEAM_NOT_PROPOSED', 'Only a proposed team can be accepted');
     }
     // The caller was removed after the request was authorized.
-    if ((await strangers(tx, actor, [actor.id])).length > 0) throw notFound();
+    if (missing.length > 0) throw notFound();
     if ((await join(tx, team, [actor.id], now)).length > 0) {
       throw new ApiError(409, 'ALREADY_ON_TEAM', 'You are already on a team this season');
     }
@@ -529,4 +533,73 @@ export async function setRoster(
       return loadTeam(tx, team.id);
     }),
   );
+}
+
+// The seasons of a league, not yet finalized, in which a member is on a team's roster or is one
+// of the pair of a team awaiting approval: what their departure (domain/departures.ts) must
+// take them off with leaveTeams. Read without a lock. The departure already holds the member's
+// row, and joining a team, or being asked to, holds it FOR SHARE (strangers), so none can be
+// added meanwhile.
+export async function seasonsWithTeamsOf(
+  tx: Tx,
+  leagueId: string,
+  membershipId: string,
+): Promise<string[]> {
+  const rostered = tx
+    .select({ seasonId: teamRoster.seasonId })
+    .from(teamRoster)
+    .where(and(eq(teamRoster.membershipId, membershipId), isNull(teamRoster.validTo)));
+  const paired = tx
+    .select({ seasonId: seasonTeams.seasonId })
+    .from(seasonTeams)
+    .where(and(inArray(seasonTeams.status, ['proposed', 'accepted']), pairedWith(membershipId)));
+  const rows = await tx
+    .select({ id: seasons.id })
+    .from(seasons)
+    .where(
+      and(
+        eq(seasons.leagueId, leagueId),
+        ne(seasons.status, 'finalized'),
+        or(inArray(seasons.id, rostered), inArray(seasons.id, paired)),
+      ),
+    );
+  return rows.map((s) => s.id);
+}
+
+// Takes a departing member (domain/departures.ts) off the teams of a season that isn't
+// finalized, whose row the caller holds locked. Each team awaiting approval that they are one
+// of the pair of is withdrawn, as if they had withdrawn it, which frees its other player. Their
+// roster row on an approved team is closed; the team stays approved, as its counted games name
+// it, with its other player until a commissioner changes its roster.
+export async function leaveTeams(
+  tx: Tx,
+  seasonId: string,
+  membershipId: string,
+  now: Date,
+): Promise<void> {
+  const pending = await tx
+    .select()
+    .from(seasonTeams)
+    .where(
+      and(
+        eq(seasonTeams.seasonId, seasonId),
+        inArray(seasonTeams.status, ['proposed', 'accepted']),
+        pairedWith(membershipId),
+      ),
+    );
+  for (const team of pending) await close(tx, team, 'withdrawn', now);
+  await tx
+    .update(teamRoster)
+    .set({ validTo: now })
+    .where(
+      and(
+        eq(teamRoster.seasonId, seasonId),
+        eq(teamRoster.membershipId, membershipId),
+        isNull(teamRoster.validTo),
+      ),
+    );
+}
+
+function pairedWith(membershipId: string): SQL | undefined {
+  return or(eq(seasonTeams.proposedBy, membershipId), eq(seasonTeams.partnerId, membershipId));
 }

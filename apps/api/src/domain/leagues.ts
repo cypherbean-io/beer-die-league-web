@@ -90,12 +90,18 @@ export async function getLeague(db: Db, leagueId: string): Promise<League> {
   return toLeague(row);
 }
 
-// Locks the league row, the lock setRole also takes, then re-reads the actor's role under
-// it. So a commissioner demoted while the request waited can't edit, and concurrent edits
-// each read the values the previous one wrote, which keeps every audit entry's "before"
-// accurate. Season edits (domain/seasons.ts) take it too, which serializes season starts.
+// Locks the league row, which setRole also locks, then re-reads the actor's role under it. So
+// a commissioner demoted while the request waited can't edit, and concurrent edits each read
+// the values the previous one wrote, which keeps every audit entry's "before" accurate. Season
+// edits (domain/seasons.ts) take it too, which serializes season starts. FOR NO KEY UPDATE
+// leaves foreign-key checks on the league unblocked, so a departure (domain/departures.ts)
+// holding it can wait for a game write that has yet to insert its game.
 export async function lockForCommissionerEdit(tx: Tx, actor: Actor): Promise<LeagueRow> {
-  const [row] = await tx.select().from(leagues).where(eq(leagues.id, actor.leagueId)).for('update');
+  const [row] = await tx
+    .select()
+    .from(leagues)
+    .where(eq(leagues.id, actor.leagueId))
+    .for('no key update');
   if (!row) throw missingLeague();
   const [self] = await tx
     .select({ role: memberships.role })

@@ -2142,17 +2142,16 @@ describe('force-confirming', () => {
     const g = await submitted(t, t.bo.caller, game(t));
     let pending: Promise<Response> | undefined;
 
-    // The request passes the role check it can make up front, then waits on the game lock
-    // while Ana loses the role.
+    // The request passes the role check it can make up front, then waits to re-read the
+    // membership while Ana loses the role.
     await api.db.transaction(async (tx) => {
-      await tx.execute(sql`select 1 from games where id = ${g.id} for update`);
+      await tx.execute(
+        sql`update memberships set role = 'member' where id = ${t.ana.membershipId}`,
+      );
       pending = forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
         membershipIds: [t.cy.membershipId],
       });
       await waitForLockWaiters(api.db, 1);
-      await api.db.execute(
-        sql`update memberships set role = 'member' where id = ${t.ana.membershipId}`,
-      );
     });
     const res = await pending!;
 
@@ -2648,15 +2647,14 @@ describe('deciding an override', () => {
     const g = await confirmedAwaitingReview(t);
     let pending: Promise<Response> | undefined;
 
-    // The request passes the role check it can make up front, then waits on the game lock
-    // while Ana loses the role.
+    // The request passes the role check it can make up front, then waits to re-read the
+    // membership while Ana loses the role.
     await api.db.transaction(async (tx) => {
-      await tx.execute(sql`select 1 from games where id = ${g.id} for update`);
-      pending = override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
-      await waitForLockWaiters(api.db, 1);
-      await api.db.execute(
+      await tx.execute(
         sql`update memberships set role = 'member' where id = ${t.ana.membershipId}`,
       );
+      pending = override(t, t.ana.caller, g.id, g.openRevision!.id, { decision: 'approve' });
+      await waitForLockWaiters(api.db, 1);
     });
     const res = await pending!;
 

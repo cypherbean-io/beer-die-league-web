@@ -17,7 +17,20 @@ import {
   type Side,
   type SubmitGameBody,
 } from '@beer-die/core';
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, max, ne } from 'drizzle-orm';
+import {
+  and,
+  type AnyColumn,
+  asc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  max,
+  ne,
+} from 'drizzle-orm';
 import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
@@ -674,6 +687,7 @@ export async function correctGame(
   const baseId = body.baseRevisionId.toLowerCase();
 
   return deps.db.transaction(async (tx) => {
+    await holdPlayers(tx, actor, baseId);
     const game = await lockGame(tx, actor, gameId, now);
     const [base] = await tx
       .select({ status: gameRevisions.status })
@@ -777,9 +791,25 @@ async function lockGame(tx: Tx, actor: Actor, gameId: string, now: Date): Promis
   return settleExpired(tx, game, now);
 }
 
-// A commissioner action's second role check, made under the game lock. The role was read
-// before the lock wait; FOR SHARE re-reads it as committed since, and holds it until this
-// commits.
+// Holds a revision's players' memberships FOR SHARE, as checkResult does, but before the game
+// lock: a departure (domain/departures.ts) takes the member's row and then the games they play
+// in, so a write that waited for a game while holding a player's membership could deadlock
+// with it. Revisions are immutable, so the base revision named in a request needs no lock to
+// read; one outside the caller's league holds nothing.
+async function holdPlayers(tx: Tx, actor: Actor, revisionId: string): Promise<void> {
+  await tx
+    .select({ id: memberships.id })
+    .from(memberships)
+    .innerJoin(revisionPlayers, eq(revisionPlayers.membershipId, memberships.id))
+    .where(
+      and(eq(revisionPlayers.revisionId, revisionId), eq(memberships.leagueId, actor.leagueId)),
+    )
+    .for('share', { of: memberships });
+}
+
+// A commissioner action's second role check. The role was read before the request took any
+// lock; FOR SHARE re-reads it as committed since, and holds it until this commits. It runs
+// before the game lock, like holdPlayers, and for the same reason.
 async function recheckCommissioner(tx: Tx, actor: Actor): Promise<void> {
   const [self] = await tx
     .select({ role: memberships.role })
@@ -832,6 +862,9 @@ export async function sweepExpired(
         .orderBy(asc(games.windowExpiresAt), asc(games.id))
         .limit(batchSize)
         .for('update', { skipLocked: true });
+      // Settled in season order, so the batch locks its seasons in id order, as a departure
+      // does (domain/departures.ts), and the two can't deadlock.
+      lapsed.sort((a, b) => compareIds(a.seasonId ?? '', b.seasonId ?? ''));
       for (const game of lapsed) await settleExpired(tx, game, now);
       return lapsed.length;
     });
@@ -839,6 +872,75 @@ export async function sweepExpired(
     if (batch < batchSize) return { expired, done: true };
   }
   return { expired, done: false };
+}
+
+// The order Postgres sorts the lowercase ids it returns in.
+export function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// Voids every open revision a departing member plays in (SPEC §3.5): a game that never counted
+// is voided with it, while one that did keeps counting its confirmed revision. The caller
+// holds the member's row, already no longer approved, so no revision can open with them
+// meanwhile: every write that opens one holds its players' memberships FOR SHARE until it
+// commits. Each game is locked in id order and settled like any game write first, so one whose
+// window has lapsed expires instead. Seasons are left to the caller, which must settle every
+// one returned, in id order, once all its games are done. Returns each game voided, with the
+// revision voided, and the seasons of every season game closed.
+export async function voidOpenRevisions(
+  tx: Tx,
+  leagueId: string,
+  membershipId: string,
+  now: Date,
+): Promise<{ voided: Array<{ gameId: string; revisionId: string }>; seasonIds: string[] }> {
+  const seatIn = (revisionId: AnyColumn | string) =>
+    and(eq(revisionPlayers.revisionId, revisionId), eq(revisionPlayers.membershipId, membershipId));
+  const playing = await tx
+    .select()
+    .from(games)
+    .where(
+      and(
+        eq(games.leagueId, leagueId),
+        exists(
+          tx
+            .select({ id: revisionPlayers.id })
+            .from(revisionPlayers)
+            .where(seatIn(games.openRevisionId)),
+        ),
+      ),
+    )
+    .orderBy(asc(games.id))
+    .for('update', { of: games });
+
+  const voided: Array<{ gameId: string; revisionId: string }> = [];
+  const seasonIds = new Set<string>();
+  for (const locked of playing) {
+    const game = await expireLapsed(tx, locked, now);
+    if (game !== locked && game.seasonId) seasonIds.add(game.seasonId);
+    if (!game.openRevisionId) continue;
+    // The scan matched the game as it stood before the lock; this checks it as it is now.
+    const [seat] = await tx
+      .select({ id: revisionPlayers.id })
+      .from(revisionPlayers)
+      .where(seatIn(game.openRevisionId));
+    if (!seat) continue;
+
+    await tx
+      .update(gameRevisions)
+      .set({ status: 'voided' })
+      .where(and(eq(gameRevisions.id, game.openRevisionId), eq(gameRevisions.status, 'open')));
+    await tx
+      .update(games)
+      .set({
+        status: game.confirmedRevisionId === null ? 'voided' : game.status,
+        openRevisionId: null,
+        windowExpiresAt: null,
+      })
+      .where(eq(games.id, game.id));
+    voided.push({ gameId: game.id, revisionId: game.openRevisionId });
+    if (game.seasonId) seasonIds.add(game.seasonId);
+  }
+  return { voided, seasonIds: [...seasonIds] };
 }
 
 // THE confirmation transition (SPEC §3.4), and the only code that confirms a revision. The
@@ -969,8 +1071,8 @@ export async function forceConfirm(
   const listed = body.membershipIds.map((id) => id.toLowerCase());
 
   return deps.db.transaction(async (tx) => {
-    const game = await lockGame(tx, actor, gameId, now);
     await recheckCommissioner(tx, actor);
+    const game = await lockGame(tx, actor, gameId, now);
 
     const [revision] = await tx
       .select({ status: gameRevisions.status })
@@ -1069,8 +1171,8 @@ export async function decideOverride(
   const outcome = body.decision === 'approve' ? 'approved' : 'rejected';
 
   return deps.db.transaction(async (tx) => {
-    const game = await lockGame(tx, actor, gameId, now);
     await recheckCommissioner(tx, actor);
+    const game = await lockGame(tx, actor, gameId, now);
 
     const [revision] = await tx
       .select({ status: gameRevisions.status, overrideStatus: gameRevisions.overrideStatus })

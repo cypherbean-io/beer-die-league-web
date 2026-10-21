@@ -380,6 +380,10 @@ export const RosterChangeDetails = z.strictObject({
 // the commissioners ever saw a team rejected as a proposal, so only they see its name here.
 export const TeamRejectedDetails = z.strictObject({ status: z.enum(['proposed', 'accepted']) });
 
+// What the log stores when a commissioner removes a member: the games whose open revision the
+// removal voided, because the member played in them.
+export const MemberRemovedDetails = z.strictObject({ voidedGameIds: z.array(z.uuid()) });
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -455,6 +459,14 @@ export const AuditEvent = z.discriminatedUnion('action', [
     team: AuditTeam,
     season: AuditSeason,
     roster: z.strictObject({ before: z.array(AuditPlayer), after: z.array(AuditPlayer) }),
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('member.removed'),
+    targetType: z.literal('membership'),
+    details: MemberRemovedDetails,
+    // The member removed, named when the log is read rather than stored in `details`.
+    player: AuditPlayer,
   }),
 ]);
 export type AuditEvent = z.infer<typeof AuditEvent>;

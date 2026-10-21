@@ -679,6 +679,15 @@ const LEAGUE_ROUTES: Route[] = [
     commissioner: true,
     body: { role: 'commissioner' },
   },
+  // Y's commissioner gets 409 for the pending member; X's gets 404.
+  {
+    method: 'POST',
+    path: '/api/leagues/:leagueId/members/:mid/remove',
+    commissioner: true,
+    body: {},
+  },
+  // Y's commissioner is its last, so gets 409 rather than leaving; X's gets 404.
+  { method: 'POST', path: '/api/leagues/:leagueId/leave', commissioner: false, body: {} },
   { method: 'POST', path: '/api/leagues/:leagueId/invites', commissioner: true, body: {} },
   { method: 'GET', path: '/api/leagues/:leagueId/invites', commissioner: true },
   { method: 'DELETE', path: '/api/leagues/:leagueId/invites/:iid', commissioner: true },

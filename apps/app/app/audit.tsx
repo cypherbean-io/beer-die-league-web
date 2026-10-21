@@ -83,7 +83,25 @@ function describeEvent(event: AuditEvent): { summary: string; lines: string[] } 
         lines: [`${names(event.roster.before)} → ${names(event.roster.after)}`],
       };
     }
+    case 'member.removed': {
+      const voided = event.details.voidedGameIds.length;
+      return {
+        summary: `removed ${event.player.displayName} from the league`,
+        lines:
+          voided === 0
+            ? []
+            : [`Voided ${voided} game${voided === 1 ? '' : 's'} awaiting confirmation`],
+      };
+    }
   }
+}
+
+// Why a commissioner's action is flagged: they had a stake in what it changed.
+function participation(event: AuditEvent): string {
+  if (!event.actorWasParticipant) return '';
+  if (event.targetType === 'team') return ' (on this team)';
+  if (event.targetType === 'membership') return ' (played in a voided game)';
+  return ' (played in this game)';
 }
 
 export default function AuditLog() {
@@ -123,11 +141,7 @@ function EventList({ leagueId }: { leagueId: string }) {
           <View key={event.id} style={styles.entry} testID="audit-event">
             <Text>
               <Text style={styles.name}>{event.actor.displayName}</Text> {summary}
-              {event.actorWasParticipant
-                ? event.targetType === 'team'
-                  ? ' (on this team)'
-                  : ' (played in this game)'
-                : ''}
+              {participation(event)}
             </Text>
             {lines.map((line) => (
               <Text key={line} style={styles.change}>

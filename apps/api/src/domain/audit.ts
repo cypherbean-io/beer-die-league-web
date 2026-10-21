@@ -69,14 +69,16 @@ export async function listAudit(
     .limit(limit + 1);
 
   const page = rows.slice(0, limit);
-  // A forced confirmation names the player it was for, and a roster change the players before
-  // and after. Names are looked up now, not stored, so the log shows a renamed or anonymized
-  // member as they are today.
+  // A forced confirmation names the player it was for, a removal the member removed, and a
+  // roster change the players before and after. Names are looked up now, not stored, so the log
+  // shows a renamed or anonymized member as they are today.
   const playerIdOf = new Map(
     page.flatMap((row) =>
       row.action === 'game.confirmation_forced'
         ? [[row.id, ForcedConfirmationDetails.parse(row.details).membershipId] as const]
-        : [],
+        : row.action === 'member.removed'
+          ? [[row.id, row.targetId] as const]
+          : [],
     ),
   );
   const rosterChangeOf = new Map(
