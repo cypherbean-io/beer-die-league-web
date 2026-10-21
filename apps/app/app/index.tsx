@@ -46,6 +46,9 @@ export default function Home() {
           ) : (
             <LeagueHome membership={membership} />
           )}
+          <Link href="/account" testID="account-link" style={styles.link}>
+            Account
+          </Link>
           <Pressable
             testID="sign-out"
             role="button"

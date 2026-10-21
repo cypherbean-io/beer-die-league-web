@@ -114,9 +114,6 @@ export async function drainOutbox(
     // Params are needed only to render the mail. Once a row is terminal they are wiped, so
     // a sealed code or a display name doesn't outlive the message.
     const wipe = { params: {} };
-    const rendered = row.to
-      ? renderEmail(row.template, row.params, { key, now })
-      : ({ drop: 'NO_RECIPIENT' } as const);
     const entry = {
       level: 'info',
       msg: 'outbox',
@@ -124,6 +121,15 @@ export async function drainOutbox(
       template: row.template,
     } as const;
 
+    if (!row.to) {
+      // The account was deleted, which erases its mail (domain/departures.ts); this row was
+      // queued by a write that committed after it.
+      await db.delete(emailOutbox).where(eq(emailOutbox.id, row.id));
+      log({ ...entry, outcome: 'dropped', reason: 'NO_RECIPIENT' });
+      result.dropped += 1;
+      continue;
+    }
+    const rendered = renderEmail(row.template, row.params, { key, now });
     if ('drop' in rendered) {
       // Terminal: attempts at the cap means the row is never claimed again.
       await db

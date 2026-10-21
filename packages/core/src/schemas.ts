@@ -111,6 +111,11 @@ export type MyMembership = z.infer<typeof MyMembership>;
 export const MeResponse = z.strictObject({ user: User, memberships: z.array(MyMembership) });
 export type MeResponse = z.infer<typeof MeResponse>;
 
+// Deleting the account anonymizes the caller in every league as "Deleted player #N", unless
+// they keep their display name on the games they played.
+export const DeleteAccountBody = z.strictObject({ keepDisplayName: z.boolean() });
+export type DeleteAccountBody = z.input<typeof DeleteAccountBody>;
+
 export const LeagueRules = z.strictObject({
   targetScore: z.int(),
   winBy: z.int(),

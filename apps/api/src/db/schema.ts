@@ -165,6 +165,9 @@ export const memberships = pgTable(
       enum: ['pending', 'approved', 'removed', 'left', 'deleted'],
     }).notNull(),
     emailNotifications: boolean('email_notifications').notNull().default(true),
+    // Set when the account is deleted: whether the name stayed on the member's games (and
+    // reserved) rather than becoming "Deleted player #N".
+    keepNameOnDelete: boolean('keep_name_on_delete').notNull().default(false),
     createdAt: ts('created_at').notNull(),
   },
   (t) => [
