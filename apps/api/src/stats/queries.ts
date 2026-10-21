@@ -1,9 +1,18 @@
-import type { PartnershipStats, PlayerStats, StatsScope } from '@beer-die/core';
+import {
+  type PartnershipStats,
+  type PlayerStats,
+  rankStandings,
+  type StandingsGame,
+  type StandingsResponse,
+  type StatsScope,
+  type TeamLine,
+} from '@beer-die/core';
 import { and, asc, desc, eq, exists, or, type SQL, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Db } from '../db/client.ts';
-import { countedResults, memberships } from '../db/schema.ts';
+import { countedResults, memberships, seasons, seasonTeams } from '../db/schema.ts';
 import type { Actor } from '../domain/membership.ts';
+import { toSeason } from '../domain/seasons.ts';
 import { ApiError } from '../http.ts';
 
 function inScope(scope: StatsScope): SQL | undefined {
@@ -174,4 +183,68 @@ export async function listPartnershipStats(
     points,
     sinks,
   }));
+}
+
+// Each team's side of each counted game in a season: its players' points and sinks, subs
+// included. Two rows per game, one of them the winner's.
+const teamSide = {
+  gameId: countedResults.gameId,
+  teamId: countedResults.teamId,
+  won: sql<boolean>`bool_and(${countedResults.won})`,
+  points: sql<number>`sum(${countedResults.points})::int`,
+  sinks: sql<number>`sum(${countedResults.sinks})::int`,
+};
+
+// A season's standings (SPEC §3.7): its approved teams, ranked by its standings config from
+// the confirmed games between them. Every member may read them; only approved teams are listed,
+// and every member sees those anyway. A season outside the caller's league is a 404, like an
+// unknown one. The reads share one snapshot, so the config, teams, and games are all from the
+// same moment. Approving a team is final, and a season game names two approved teams, so every
+// team a counted game names is listed.
+export async function getStandings(
+  db: Db,
+  actor: Actor,
+  seasonId: string,
+): Promise<StandingsResponse> {
+  return db.transaction(
+    async (tx) => {
+      const [season] = await tx
+        .select()
+        .from(seasons)
+        .where(and(eq(seasons.id, seasonId), eq(seasons.leagueId, actor.leagueId)));
+      if (!season) throw new ApiError(404, 'NOT_FOUND', 'Not found');
+      const teams = await tx
+        .select({ id: seasonTeams.id, name: seasonTeams.name })
+        .from(seasonTeams)
+        .where(and(eq(seasonTeams.seasonId, season.id), eq(seasonTeams.status, 'approved')));
+      const sides = await tx
+        .select(teamSide)
+        .from(countedResults)
+        .where(
+          and(eq(countedResults.leagueId, actor.leagueId), eq(countedResults.seasonId, season.id)),
+        )
+        .groupBy(countedResults.gameId, countedResults.teamId);
+
+      const byGame = new Map<string, Partial<StandingsGame>>();
+      for (const { gameId, teamId, won, points, sinks } of sides) {
+        if (teamId === null) throw new Error('a counted season game has a side with no team');
+        const game = byGame.get(gameId) ?? {};
+        const line: TeamLine = { teamId, points, sinks };
+        if (won) game.winner = line;
+        else game.loser = line;
+        byGame.set(gameId, game);
+      }
+      const games = [...byGame.values()].map(({ winner, loser }) => {
+        if (!winner || !loser) throw new Error('a counted season game lacks a winner or a loser');
+        return { winner, loser };
+      });
+
+      const parsed = toSeason(season);
+      return {
+        season: parsed,
+        standings: rankStandings(teams, games, parsed.standingsConfig),
+      };
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
 }

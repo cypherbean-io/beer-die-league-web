@@ -1,9 +1,17 @@
-import { INBOX_MAX, type MyMembership } from '@beer-die/core';
+import { INBOX_MAX, type MyMembership, type Season } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { getHealth, getInbox, getLeague, logout } from '../src/api/client';
+import {
+  getHealth,
+  getInbox,
+  getLeague,
+  getSeasons,
+  getStandings,
+  logout,
+} from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
+import { rankLabel } from '../src/standings';
 
 export default function Home() {
   const queryClient = useQueryClient();
@@ -90,6 +98,7 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
       <Link href="/record-game" testID="record-game-link" style={styles.link}>
         Record game
       </Link>
+      <StandingsSnapshot leagueId={membership.leagueId} />
       <Link href="/stats" testID="stats-link" style={styles.link}>
         Stats
       </Link>
@@ -116,9 +125,59 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
   );
 }
 
+// The active season, or else the one started most recently. Null before any has started.
+function currentSeason(seasons: Season[]): Season | null {
+  const active = seasons.find((s) => s.status === 'active');
+  if (active) return active;
+  const started = seasons.filter((s) => s.startedAt !== null);
+  started.sort((a, b) => (a.startedAt! < b.startedAt! ? 1 : -1));
+  return started[0] ?? null;
+}
+
+const SNAPSHOT_ROWS = 3;
+
+function StandingsSnapshot({ leagueId }: { leagueId: string }) {
+  const seasons = useQuery({
+    queryKey: ['seasons', leagueId],
+    queryFn: () => getSeasons(leagueId),
+  });
+  const season = seasons.data ? currentSeason(seasons.data) : null;
+  const standings = useQuery({
+    queryKey: ['standings', leagueId, season?.id],
+    queryFn: () => getStandings(leagueId, season!.id),
+    enabled: season !== null,
+  });
+  if (!season) return null;
+  const top = (standings.data?.standings ?? []).filter((r) => r.rank !== null);
+
+  return (
+    <View testID="standings-snapshot" style={styles.snapshot}>
+      <Text style={styles.subtitle}>{season.name}</Text>
+      {standings.isSuccess && top.length === 0 && (
+        <Text style={styles.muted}>No team is ranked yet.</Text>
+      )}
+      {top.slice(0, SNAPSHOT_ROWS).map((r) => (
+        <Text key={r.team.id} testID={`snapshot-row-${r.team.id}`}>
+          {rankLabel(r)} {r.team.name}, {r.wins}–{r.losses}
+        </Text>
+      ))}
+      <Link
+        href={{ pathname: '/standings/[sid]', params: { sid: season.id } }}
+        testID="standings-link"
+        style={styles.link}
+      >
+        Standings
+      </Link>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   title: { fontSize: 22, fontWeight: '700' },
+  subtitle: { fontSize: 16, fontWeight: '700' },
+  snapshot: { alignItems: 'center', gap: 4 },
+  muted: { color: '#555' },
   message: { textAlign: 'center', maxWidth: 420 },
   link: { color: '#1d4ed8', padding: 8 },
   badge: { backgroundColor: '#b91c1c', color: '#fff', fontWeight: '700', borderRadius: 10 },

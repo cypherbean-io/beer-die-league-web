@@ -33,7 +33,7 @@ type SeasonRow = typeof seasons.$inferSelect;
 
 const notFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
 
-function toSeason(row: SeasonRow): Season {
+export function toSeason(row: SeasonRow): Season {
   // Parsed rather than cast: a jsonb column whose stored shape has drifted fails here,
   // loudly, instead of reaching clients.
   return Season.parse({

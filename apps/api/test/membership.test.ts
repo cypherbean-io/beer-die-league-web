@@ -778,6 +778,7 @@ const LEAGUE_ROUTES: Route[] = [
     commissioner: true,
     body: { minGames: 2 },
   },
+  { method: 'GET', path: '/api/leagues/:leagueId/seasons/:sid/standings', commissioner: false },
   { method: 'GET', path: '/api/leagues/:leagueId/seasons/:sid/teams', commissioner: false },
   // Y's commissioner gets 422 for the placeholder partner; X's gets 404 for the season.
   {

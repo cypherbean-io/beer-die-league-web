@@ -295,6 +295,33 @@ export type TeamResponse = z.infer<typeof TeamResponse>;
 export const TeamsResponse = z.strictObject({ teams: z.array(Team) });
 export type TeamsResponse = z.infer<typeof TeamsResponse>;
 
+// One approved team's line in its season's standings (SPEC §3.7), from confirmed games only.
+// Points for and against are each side's players' points, sink points and subs included.
+// Teams tied on every metric of the season's order share a rank and are marked tied (shown as
+// "T-2"). A team below the season's minimum games, or with none, has no rank.
+export const StandingsRow = z.strictObject({
+  team: z.strictObject({ id: z.uuid(), name: z.string() }),
+  rank: z.int().min(1).nullable(),
+  tied: z.boolean(),
+  gamesPlayed: z.int(),
+  wins: z.int(),
+  losses: z.int(),
+  winPct: z.number().nullable(),
+  pointsFor: z.int(),
+  pointsAgainst: z.int(),
+  pointDiff: z.int(),
+  sinks: z.int(),
+});
+export type StandingsRow = z.infer<typeof StandingsRow>;
+
+// Ranked teams by rank, ties by name, then unranked teams by name. The season carries the
+// config they were ranked by.
+export const StandingsResponse = z.strictObject({
+  season: Season,
+  standings: z.array(StandingsRow),
+});
+export type StandingsResponse = z.infer<typeof StandingsResponse>;
+
 export const AUDIT_PAGE_MAX = 100;
 
 // Query strings arrive as strings. Only plain digits count as a limit, so "1e2" and " 5"
