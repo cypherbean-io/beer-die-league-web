@@ -2897,7 +2897,7 @@ describe('override request emails', () => {
     for (const { params } of stored) expect(JSON.stringify(params)).not.toMatch(/\d/);
     for (const mail of reviewMail()) {
       expect(mail.text).toContain('Bo recorded a game that breaks the league rules');
-      expect(mail.text).toContain(`${APP_ORIGIN}/`);
+      expect(mail.text).toContain(`${APP_ORIGIN}/overrides`);
       expect(`${mail.subject}\n${mail.text}`).not.toMatch(/\d/);
       expect(mail.text).not.toContain('@');
     }

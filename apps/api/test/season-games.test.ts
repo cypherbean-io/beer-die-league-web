@@ -3,9 +3,13 @@ import {
   type CorrectGameBody,
   CreateInviteResponse,
   ErrorBody,
+  type ExhibitionGameBody,
   type Game,
   GameResponse,
   JoinResponse,
+  PartnershipStatsResponse,
+  type PlayerStats,
+  PlayerStatResponse,
   PlayerStatsResponse,
   type Season,
   type SeasonGameBody,
@@ -227,7 +231,11 @@ function submit(l: League, as: Player, body: unknown): Promise<Response> {
   return call('POST', `/api/leagues/${l.leagueId}/games`, { as: as.caller, body });
 }
 
-async function submitted(l: League, as: Player, body: SeasonGameBody): Promise<Game> {
+async function submitted(
+  l: League,
+  as: Player,
+  body: SeasonGameBody | ExhibitionGameBody,
+): Promise<Game> {
   const res = await submit(l, as, body);
   expect(res.status).toBe(201);
   return GameResponse.parse(await res.json()).game;
@@ -244,7 +252,11 @@ async function confirmed(l: League, as: Player, g: Game): Promise<Game> {
 }
 
 // Submitted by `by`, then confirmed by the other three.
-async function counted(s: Setup, by: Player, body: SeasonGameBody): Promise<Game> {
+async function counted(
+  s: Setup,
+  by: Player,
+  body: SeasonGameBody | ExhibitionGameBody,
+): Promise<Game> {
   const everyone = [s.ana, s.bo, s.cy, s.di, s.ed, s.flo, s.gus, s.hal];
   const ids = [...body.sides.A.players, ...body.sides.B.players].map((p) => p.membershipId);
   let g = await submitted(s, by, body);
@@ -869,7 +881,165 @@ describe('a sub in stats', () => {
     // Bo, whom Ed replaced, didn't play.
     expect(players.some((p) => p.membershipId === s.bo.membershipId)).toBe(false);
   });
+
+  it("counts the game, points, and result in the sub's own season stats", async () => {
+    const s = await setup();
+    await counted(
+      s,
+      s.ana,
+      seasonGame(s, {
+        sides: {
+          A: side(s.sharks, line(s.ana, 6), line(s.ed, 5)),
+          B: side(s.jets, line(s.cy, 5), line(s.di, 4)),
+        },
+      }),
+    );
+
+    const players = await seasonStats(s, s.bo, s.season.id);
+
+    expect(players.find((p) => p.membershipId === s.ed.membershipId)).toMatchObject({
+      gamesPlayed: 1,
+      wins: 1,
+      points: 5,
+    });
+    expect(players.some((p) => p.membershipId === s.bo.membershipId)).toBe(false);
+  });
 });
+
+function statsPath(s: Setup, path: string, seasonId: string): string {
+  return `/api/leagues/${s.leagueId}/stats/${path}?scope=season:${seasonId}`;
+}
+
+async function seasonStats(s: Setup, as: Player, seasonId: string): Promise<PlayerStats[]> {
+  const res = await call('GET', statsPath(s, 'players', seasonId), { as: as.caller });
+  expect(res.status).toBe(200);
+  return PlayerStatsResponse.parse(await res.json()).players;
+}
+
+describe('stats in a season scope', () => {
+  // Fall's game is counted and the season ended; then Winter starts, with its own teams.
+  async function twoSeasons(s: Setup): Promise<Season> {
+    await counted(s, s.ana, seasonGame(s));
+    await ended(s, s.season.id);
+    const winter = await started(s, (await draft(s, 'Winter 2026')).id);
+    const owls = await approved(s, s.flo, s.gus, winter.id, 'Owls');
+    const hawks = await approved(s, s.ed, s.hal, winter.id, 'Hawks');
+    clock.advance(HOUR);
+    await counted(
+      s,
+      s.flo,
+      seasonGame(s, {
+        seasonId: winter.id,
+        playedAt: '2026-10-18T12:30:00.000Z',
+        sides: {
+          A: side(owls, line(s.flo, 6), line(s.gus, 5)),
+          B: side(hawks, line(s.ed, 5), line(s.hal, 4)),
+        },
+      }),
+    );
+    return winter;
+  }
+
+  it("counts only that season's games, leaving out exhibitions and other seasons", async () => {
+    const s = await setup();
+    const winter = await twoSeasons(s);
+    await counted(s, s.ana, exhibitionBody(s));
+
+    const names = (players: PlayerStats[]) =>
+      players.map((p) => [p.displayName, p.gamesPlayed, p.wins]);
+    expect(names(await seasonStats(s, s.bo, s.season.id))).toEqual([
+      ['Ana', 1, 1],
+      ['Bo', 1, 1],
+      ['Cy', 1, 0],
+      ['Di', 1, 0],
+    ]);
+    expect(names(await seasonStats(s, s.bo, winter.id))).toEqual([
+      ['Flo', 1, 1],
+      ['Gus', 1, 1],
+      ['Ed', 1, 0],
+      ['Hal', 1, 0],
+    ]);
+  });
+
+  it("gives a player's profile in a season, with zeros for a season they sat out", async () => {
+    const s = await setup();
+    const winter = await twoSeasons(s);
+
+    const profile = async (seasonId: string) => {
+      const res = await call('GET', statsPath(s, `players/${s.ana.membershipId}`, seasonId), {
+        as: s.bo.caller,
+      });
+      expect(res.status).toBe(200);
+      return PlayerStatResponse.parse(await res.json()).player;
+    };
+    expect(await profile(s.season.id)).toMatchObject({ gamesPlayed: 1, wins: 1, points: 6 });
+    expect(await profile(winter.id)).toMatchObject({ gamesPlayed: 0, wins: 0, points: 0 });
+  });
+
+  it('gives partnerships in a season, crediting the pair who actually played', async () => {
+    const s = await setup();
+    await counted(
+      s,
+      s.ana,
+      seasonGame(s, {
+        sides: {
+          A: side(s.sharks, line(s.ana, 6), line(s.ed, 5)),
+          B: side(s.jets, line(s.cy, 5), line(s.di, 4)),
+        },
+      }),
+    );
+
+    const res = await call('GET', statsPath(s, 'partnerships', s.season.id), { as: s.bo.caller });
+
+    expect(res.status).toBe(200);
+    const { partnerships } = PartnershipStatsResponse.parse(await res.json());
+    expect(
+      partnerships.map((p) => [p.players.map((x) => x.displayName).sort(), p.gamesPlayed, p.wins]),
+    ).toEqual([
+      [['Ana', 'Ed'], 1, 1],
+      [['Cy', 'Di'], 1, 0],
+    ]);
+  });
+
+  it('gives an empty list for a season that has not started', async () => {
+    const s = await setup();
+    await counted(s, s.ana, seasonGame(s));
+    const spring = await draft(s, 'Spring 2027');
+
+    expect(await seasonStats(s, s.bo, spring.id)).toEqual([]);
+  });
+
+  it.each([
+    ['players', () => 'players'],
+    ['a profile', (s: Setup) => `players/${s.ana.membershipId}`],
+    ['partnerships', () => 'partnerships'],
+  ])(
+    "gives 404 for %s in another league's season, exactly as an unknown one",
+    async (_label, path) => {
+      const s = await setup();
+      const other = await setup('Attic League', 'attic.example.com');
+
+      for (const seasonId of [other.season.id, randomUUID()]) {
+        const res = await call('GET', statsPath(s, path(s), seasonId), { as: s.bo.caller });
+        expect(res.status).toBe(404);
+        expect((await errorOf(res)).code).toBe('NOT_FOUND');
+      }
+    },
+  );
+});
+
+function exhibitionBody(s: Setup): ExhibitionGameBody {
+  return {
+    idempotencyKey: randomUUID(),
+    kind: 'exhibition',
+    playedAt: PLAYED_AT,
+    sides: {
+      A: { players: [line(s.ana, 6), line(s.bo, 5)] },
+      B: { players: [line(s.cy, 5), line(s.di, 4)] },
+    },
+    winner: 'A',
+  };
+}
 
 // The constraint Postgres names as refusing `write`.
 async function refusedBy(write: Promise<unknown>): Promise<string | undefined> {

@@ -1,18 +1,33 @@
-import type { StatsScope } from '@beer-die/core';
+import { type Season, scopeSeasonId, seasonScope, type StatsScope } from '@beer-die/core';
+import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { getSeasons } from './api/client';
 
-// Season tabs arrive with seasons.
-export const SCOPES: Array<{ scope: StatsScope; label: string }> = [
+const SCOPES: Array<{ scope: StatsScope; label: string }> = [
   { scope: 'combined', label: 'Combined' },
   { scope: 'exhibition', label: 'Exhibition' },
   { scope: 'alltime', label: 'All-time' },
 ];
 
-export const SCOPE_NOTES: Record<StatsScope, string> = {
-  combined: 'Every counted game.',
-  exhibition: 'Exhibition games only.',
-  alltime: 'Season games from every season.',
-};
+// The seasons with stats to show: every one that has started, newest first.
+export function useStatsSeasons(leagueId: string): Season[] {
+  const seasons = useQuery({
+    queryKey: ['seasons', leagueId],
+    queryFn: () => getSeasons(leagueId),
+  });
+  return (seasons.data ?? []).filter((s) => s.status !== 'draft');
+}
+
+export function scopeNote(scope: StatsScope, seasons: Season[]): string {
+  const seasonId = scopeSeasonId(scope);
+  if (seasonId !== null) {
+    const name = seasons.find((s) => s.id === seasonId)?.name ?? 'this season';
+    return `Games in ${name}, subs included.`;
+  }
+  if (scope === 'exhibition') return 'Exhibition games only.';
+  if (scope === 'alltime') return 'Season games from every season.';
+  return 'Every counted game.';
+}
 
 // The API leaves a rate null until the player has a game in the scope.
 export const percent = (rate: number | null) =>
@@ -21,17 +36,30 @@ export const percent = (rate: number | null) =>
 export const perGame = (rate: number | null, digits: number) =>
   rate === null ? '–' : rate.toFixed(digits);
 
-type ScopeTabsProps = { value: StatsScope; onChange: (scope: StatsScope) => void };
+type ScopeTabsProps = {
+  value: StatsScope;
+  seasons: Season[];
+  onChange: (scope: StatsScope) => void;
+};
 
-export function ScopeTabs({ value, onChange }: ScopeTabsProps) {
+// A tab per started season, newest first, then the scopes that span seasons.
+export function ScopeTabs({ value, seasons, onChange }: ScopeTabsProps) {
+  const tabs = [
+    ...seasons.map((s) => ({
+      scope: seasonScope(s.id),
+      label: s.name,
+      testID: `scope-season-${s.id}`,
+    })),
+    ...SCOPES.map((s) => ({ ...s, testID: `scope-${s.scope}` })),
+  ];
   return (
     <View role="tablist" style={styles.tabs}>
-      {SCOPES.map(({ scope, label }) => {
+      {tabs.map(({ scope, label, testID }) => {
         const selected = scope === value;
         return (
           <Pressable
             key={scope}
-            testID={`scope-${scope}`}
+            testID={testID}
             role="tab"
             aria-selected={selected}
             onPress={() => onChange(scope)}

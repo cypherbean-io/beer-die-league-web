@@ -1,26 +1,15 @@
 import { INBOX_MAX, type MyMembership, type Season } from '@beer-die/core';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Link, Redirect, Stack } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import {
-  getHealth,
-  getInbox,
-  getLeague,
-  getSeasons,
-  getStandings,
-  logout,
-} from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { getHealth, getInbox, getLeague, getSeasons, getStandings } from '../src/api/client';
+import { currentMembership, useMe, useSignOut } from '../src/api/hooks';
 import { rankLabel } from '../src/standings';
 
 export default function Home() {
-  const queryClient = useQueryClient();
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth });
   const me = useMe();
-  const signOut = useMutation({
-    mutationFn: logout,
-    onSuccess: () => queryClient.setQueryData(['me'], null),
-  });
+  const signOut = useSignOut();
 
   if (me.data === null) return <Redirect href="/sign-in" />;
   const membership = currentMembership(me.data);
@@ -101,6 +90,9 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
       <Link href="/record-game" testID="record-game-link" style={styles.link}>
         Record game
       </Link>
+      <Link href="/games" testID="games-link" style={styles.link}>
+        Games
+      </Link>
       <StandingsSnapshot leagueId={membership.leagueId} />
       <Link href="/stats" testID="stats-link" style={styles.link}>
         Stats
@@ -116,6 +108,9 @@ function LeagueHome({ membership }: { membership: MyMembership }) {
       </Link>
       {membership.role === 'commissioner' && (
         <>
+          <Link href="/overrides" testID="overrides-link" style={styles.link}>
+            Games to review
+          </Link>
           <Link href="/invites" testID="invites-link" style={styles.link}>
             Invite players
           </Link>

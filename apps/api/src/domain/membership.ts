@@ -19,7 +19,8 @@ import { enqueueEmail } from '../mail/outbox.ts';
 import { MEMBER_PENDING, memberPendingParams } from '../mail/templates.ts';
 
 export const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-// A refused join reveals whether a name is taken, so attempts are capped per user.
+// A refused join reveals whether a name is taken, so attempts are capped per user. Name
+// changes (updateMe) reveal the same, so they spend the same budget.
 const JOINS_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -67,6 +68,7 @@ const myMembershipColumns = {
   displayName: memberships.displayName,
   role: memberships.role,
   status: memberships.status,
+  emailNotifications: memberships.emailNotifications,
 };
 
 // Pending memberships are listed too, so the app can show "awaiting approval".
@@ -79,6 +81,63 @@ export async function listMyMemberships(db: Db, userId: string): Promise<MyMembe
       and(eq(memberships.userId, userId), inArray(memberships.status, ['pending', 'approved'])),
     )
     .orderBy(asc(memberships.createdAt), asc(memberships.id));
+}
+
+const NAME_KEY_UNIQUE = 'memberships_league_name_key_unique';
+
+function violates(err: unknown, constraint: string): boolean {
+  const cause = (err as { cause?: { code?: string; constraint_name?: string } }).cause;
+  return cause?.code === '23505' && cause.constraint_name === constraint;
+}
+
+// Changes the caller's own display name and email setting in every league they belong to,
+// pending or approved; memberships they have left or lost keep the name they had. A name
+// someone else holds in any of those leagues (kept names of deleted members included) refuses
+// the whole change. Not audited: players acting for themselves aren't.
+export async function updateMe(
+  deps: Deps,
+  userId: string,
+  input: { displayName?: string; emailNotifications?: boolean },
+): Promise<void> {
+  if (input.displayName !== undefined) {
+    // Counted outside the transaction, so a refused name still counts.
+    const key = rateLimitKey(deps.config.authSecret, 'join', userId);
+    if (!(await hit(deps.db, key, JOINS_PER_HOUR, HOUR_MS, deps.clock.now()))) {
+      throw new ApiError(429, 'RATE_LIMITED', 'Too many name changes. Try again later.');
+    }
+  }
+  const set = {
+    ...(input.displayName === undefined
+      ? {}
+      : { displayName: input.displayName, nameKey: nameKey(input.displayName) }),
+    ...(input.emailNotifications === undefined
+      ? {}
+      : { emailNotifications: input.emailNotifications }),
+  };
+  await deps.db.transaction(async (tx) => {
+    // FOR SHARE first, as joinLeague does, so an account deletion either waits for this or
+    // has already marked the account deleted.
+    const [account] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+      .for('share');
+    if (!account) throw new ApiError(401, 'UNAUTHENTICATED', 'Sign in to continue');
+    try {
+      await tx
+        .update(memberships)
+        .set(set)
+        .where(
+          and(eq(memberships.userId, userId), inArray(memberships.status, ['pending', 'approved'])),
+        );
+    } catch (err) {
+      // The unique index decides, so two members racing for one name can't both get it.
+      if (violates(err, NAME_KEY_UNIQUE)) {
+        throw new ApiError(409, 'NAME_TAKEN', 'That display name is taken in your league');
+      }
+      throw err;
+    }
+  });
 }
 
 // Creates a pending membership through an invite link and tells the commissioners. Unknown,

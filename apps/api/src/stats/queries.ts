@@ -2,6 +2,7 @@ import {
   type PartnershipStats,
   type PlayerStats,
   rankStandings,
+  scopeSeasonId,
   type StandingsGame,
   type StandingsResponse,
   type StatsScope,
@@ -23,7 +24,21 @@ function inScope(scope: StatsScope): SQL | undefined {
       return eq(countedResults.kind, 'exhibition');
     case 'combined':
       return undefined;
+    default:
+      return eq(countedResults.seasonId, scopeSeasonId(scope)!);
   }
+}
+
+// A season scope must name one of the caller's league's seasons; any other id gets the same
+// 404 as an unknown one, so the API doesn't reveal another league's seasons.
+async function checkScope(db: Db, actor: Actor, scope: StatsScope): Promise<void> {
+  const seasonId = scopeSeasonId(scope);
+  if (seasonId === null) return;
+  const [season] = await db
+    .select({ id: seasons.id })
+    .from(seasons)
+    .where(and(eq(seasons.id, seasonId), eq(seasons.leagueId, actor.leagueId)));
+  if (!season) throw new ApiError(404, 'NOT_FOUND', 'Not found');
 }
 
 // Counting the game id rather than rows gives 0 for a player with no rows in a left join.
@@ -64,6 +79,7 @@ export async function listPlayerStats(
   actor: Actor,
   scope: StatsScope,
 ): Promise<PlayerStats[]> {
+  await checkScope(db, actor, scope);
   const rows = await db
     .select({ ...player, ...totals })
     .from(countedResults)
@@ -90,6 +106,7 @@ export async function getPlayerStats(
   membershipId: string,
   scope: StatsScope,
 ): Promise<PlayerStats> {
+  await checkScope(db, actor, scope);
   const [row] = await db
     .select({ ...player, ...totals })
     .from(memberships)
@@ -148,6 +165,7 @@ export async function listPartnershipStats(
   actor: Actor,
   scope: StatsScope,
 ): Promise<PartnershipStats[]> {
+  await checkScope(db, actor, scope);
   const rows = await db
     .select({
       first: { membershipId: first.id, displayName: first.displayName },

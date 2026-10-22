@@ -15,12 +15,12 @@ import {
 } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   ApiRequestError,
   correctGame,
-  getInbox,
+  getGame,
   getLeague,
   getMembers,
   getSeasons,
@@ -28,6 +28,14 @@ import {
   submitGame,
 } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
+import {
+  browserStorage,
+  type DraftStore,
+  draftStore,
+  type GameDraft,
+  newDraft,
+  submitDraft,
+} from '../src/drafts';
 import { Button } from '../src/ui';
 
 const MAX_LINE_VALUE = 99;
@@ -39,7 +47,8 @@ type Seat = { membershipId: string | null; points: number; sinks: number };
 // What the form sends, for a new game or a correction.
 type Result = Omit<CorrectGameBody, 'baseRevisionId'>;
 
-// A pending game being corrected, and the open revision whose numbers fill the form.
+// A game being corrected, and the revision whose numbers fill the form: its open one, or the
+// confirmed one when the correction reopens the game.
 type Base = { game: Game; revision: GameRevision };
 
 type Kind = Game['kind'];
@@ -69,10 +78,10 @@ function messageFor(error: unknown, correcting: boolean): string {
       return 'This game was already submitted with different numbers.';
     }
     if (error.code === 'STALE_REVISION') {
-      return 'This game changed after you opened it, so your correction wasn’t saved. Check the latest numbers in your inbox.';
+      return 'This game changed after you opened it, so your correction wasn’t saved. Check the latest numbers on the game’s page.';
     }
     if (error.code === 'WINDOW_CLOSED') {
-      return 'The window to correct this game has closed, so it won’t count.';
+      return 'The window to correct this game has closed.';
     }
     if (error.code === 'SEASON_NOT_ACTIVE') {
       return 'The season isn’t active anymore, so this can’t be recorded as a season game. Record it as an exhibition game instead.';
@@ -88,51 +97,79 @@ function messageFor(error: unknown, correcting: boolean): string {
 export default function RecordGame() {
   const me = useMe();
   const membership = currentMembership(me.data);
-  // Set when the form is opened from the inbox to correct a pending game.
+  // Set when the form is opened from a game to correct it.
   const { correct } = useLocalSearchParams<{ correct?: string }>();
+  // Starting over discards the draft and opens a fresh form.
+  const [attempt, setAttempt] = useState(0);
+  const membershipId = membership?.id;
+  const drafts = useMemo(
+    () => (membershipId ? draftStore(browserStorage(), membershipId) : undefined),
+    [membershipId],
+  );
 
   if (me.data === null) return <Redirect href="/sign-in" />;
   if (me.data && membership?.status !== 'approved') return <Redirect href="/" />;
   if (!membership) return null;
   if (correct !== undefined) return <CorrectionForm membership={membership} gameId={correct} />;
-  return <RecordForm membership={membership} />;
+  return (
+    <RecordForm
+      key={attempt}
+      membership={membership}
+      drafts={drafts}
+      onStartOver={() => setAttempt((n) => n + 1)}
+    />
+  );
 }
 
-// The inbox is where pending games are listed, so a correction starts from a game there. The
-// game is fetched once and then held, so the numbers can't change under the player; if the
-// game moves on meanwhile, the server refuses the correction.
+// A correction starts from a game's page. The game is fetched once and then held, so the
+// numbers can't change under the player; if the game moves on meanwhile, the server refuses
+// the correction. A pending game is corrected from its open revision; a confirmed one is
+// reopened from the revision that counts.
 function CorrectionForm({ membership, gameId }: { membership: MyMembership; gameId: string }) {
   const { leagueId } = membership;
-  const game = useQuery({
+  const detail = useQuery({
     queryKey: ['correction', leagueId, gameId],
-    queryFn: async () => (await getInbox(leagueId)).find((g) => g.id === gameId) ?? null,
+    queryFn: () => getGame(leagueId, gameId),
     staleTime: Infinity,
     gcTime: 0,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    retry: false,
   });
 
-  if (game.isPending) return null;
-  const revision = game.data?.openRevision;
-  if (!game.data || !revision) {
+  if (detail.isPending) return null;
+  const game = detail.data?.game;
+  const revision = game?.openRevision ?? game?.confirmedRevision;
+  const plays = revision?.players.some((p) => p.membershipId === membership.id) ?? false;
+  if (!game || !revision || !plays) {
     return (
       <View style={styles.container}>
         <Stack.Screen options={{ title: 'Correct game' }} />
-        <Text testID="correction-unavailable" style={game.isError ? styles.error : undefined}>
-          {game.isError
+        <Text testID="correction-unavailable" style={detail.isError ? styles.error : undefined}>
+          {detail.isError
             ? 'Couldn’t load the game. Check your connection and try again.'
-            : 'This game is no longer waiting for your confirmation, so it can’t be corrected here.'}
+            : !revision
+              ? 'This game can’t be corrected anymore.'
+              : 'Only the four players can correct a game.'}
         </Text>
-        <Link href="/inbox" style={styles.link}>
-          Back to inbox
+        <Link href="/games" style={styles.link}>
+          Back to games
         </Link>
       </View>
     );
   }
-  return <RecordForm membership={membership} correcting={{ game: game.data, revision }} />;
+  return <RecordForm membership={membership} correcting={{ game, revision }} />;
 }
 
-function RecordForm({ membership, correcting }: { membership: MyMembership; correcting?: Base }) {
+type RecordFormProps = {
+  membership: MyMembership;
+  correcting?: Base;
+  // A new game's draft on this device; a correction keeps none.
+  drafts?: DraftStore;
+  onStartOver?: () => void;
+};
+
+function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormProps) {
   const { leagueId } = membership;
   const queryClient = useQueryClient();
   // Held from the first render: a correction names the revision whose numbers filled the form.
@@ -156,15 +193,19 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
   });
   const approvedTeams = teams.data?.filter((t) => t.status === 'approved') ?? [];
   const myTeam = approvedTeams.find((t) => t.players.some((p) => p.membershipId === membership.id));
-  // One key and play time per form, so submitting again after a failure resends the same
-  // game, which the server records at most once. A correction keeps the game's play time.
-  const [draft] = useState(() => ({
-    idempotencyKey: crypto.randomUUID(),
-    playedAt: base?.revision.playedAt ?? new Date().toISOString(),
-  }));
+  // A new game's unsent form from an earlier visit, restored as it was left.
+  const [restored] = useState(() => (base ? null : (drafts?.load() ?? null)));
+  // One key and play time per form, kept in its draft, so submitting again after a failure
+  // (after a reload too) resends the same game, which the server records at most once. A
+  // correction keeps the game's play time.
+  const [draft] = useState(() =>
+    base
+      ? { idempotencyKey: crypto.randomUUID(), playedAt: base.revision.playedAt }
+      : (restored ?? newDraft(membership.id)),
+  );
   // A correction keeps the game's kind.
-  const [kind, setKind] = useState<Kind>(base?.game.kind ?? 'exhibition');
-  const [opponentId, setOpponentId] = useState<string | null>(null);
+  const [kind, setKind] = useState<Kind>(base?.game.kind ?? restored?.kind ?? 'exhibition');
+  const [opponentId, setOpponentId] = useState<string | null>(restored?.opponentId ?? null);
   const [choosingOpponent, setChoosingOpponent] = useState(false);
   const [seats, setSeats] = useState<Seat[]>(() =>
     base
@@ -173,27 +214,45 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
           points: p.points,
           sinks: p.sinks,
         }))
-      : [
-          { membershipId: membership.id, points: 0, sinks: 0 },
-          { membershipId: null, points: 0, sinks: 0 },
-          { membershipId: null, points: 0, sinks: 0 },
-          { membershipId: null, points: 0, sinks: 0 },
-        ],
+      : (restored?.seats ?? newDraft(membership.id).seats),
   );
   const [mySeat] = useState(() =>
     base ? base.revision.players.findIndex((p) => p.membershipId === membership.id) : 0,
   );
-  const [winner, setWinner] = useState<Side | null>(base?.revision.winner ?? null);
+  const [winner, setWinner] = useState<Side | null>(
+    base?.revision.winner ?? restored?.winner ?? null,
+  );
   const [picking, setPicking] = useState<number | null>(null);
+  // A submit was tried and may not have arrived, so the button offers Retry.
+  const [attempted, setAttempted] = useState(restored?.attempted ?? false);
   const submit = useMutation({
-    mutationFn: (body: CorrectGameBody | SubmitGameBody) =>
+    mutationFn: ({
+      body,
+      snapshot,
+    }: {
+      body: CorrectGameBody | SubmitGameBody;
+      snapshot?: GameDraft;
+    }) =>
       'baseRevisionId' in body
         ? correctGame(leagueId, base!.game.id, body)
-        : submitGame(leagueId, body),
-    onSuccess: () => {
-      if (base) void queryClient.invalidateQueries({ queryKey: ['inbox', leagueId] });
+        : drafts && snapshot
+          ? submitDraft(drafts, snapshot, () => submitGame(leagueId, body))
+          : submitGame(leagueId, body),
+    onSuccess: (game) => {
+      for (const queryKey of [
+        ['inbox', leagueId],
+        ['games', leagueId],
+        ['game', leagueId, game.id],
+      ]) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
     },
   });
+  // Every change to a new game's form is saved on the device as it is made.
+  useEffect(() => {
+    if (!drafts || submit.isSuccess) return;
+    drafts.save({ ...draft, kind, opponentId, seats, winner, attempted });
+  }, [drafts, draft, kind, opponentId, seats, winner, attempted, submit.isSuccess]);
   const title = base ? 'Correct game' : 'Record game';
 
   if (submit.isSuccess) {
@@ -208,8 +267,15 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
             ? 'It counts once the other three players confirm the new numbers.'
             : 'It counts once the other three players confirm it.'}
         </Text>
-        <Link href={base ? '/inbox' : '/'} style={styles.link}>
-          {base ? 'Back to inbox' : 'Back to home'}
+        <Link
+          href={{ pathname: '/games/[gid]', params: { gid: submit.data.id } }}
+          testID="recorded-game-link"
+          style={styles.link}
+        >
+          Open the game
+        </Link>
+        <Link href="/" style={styles.link}>
+          Back to home
         </Link>
       </View>
     );
@@ -329,20 +395,37 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
     };
     if (base) {
       // A season game keeps its teams, so a correction names none.
-      submit.mutate({ baseRevisionId: base.revision.id, ...result });
-    } else if (kind === 'season') {
+      submit.mutate({ body: { baseRevisionId: base.revision.id, ...result } });
+      return;
+    }
+    setAttempted(true);
+    const snapshot: GameDraft = {
+      ...draft,
+      kind,
+      opponentId,
+      seats,
+      winner,
+      attempted: true,
+    };
+    if (kind === 'season') {
       submit.mutate({
-        idempotencyKey: draft.idempotencyKey,
-        kind: 'season',
-        seasonId: season!.id,
-        ...result,
-        sides: {
-          A: { teamId: myTeam!.id, ...result.sides.A },
-          B: { teamId: opponent!.id, ...result.sides.B },
+        snapshot,
+        body: {
+          idempotencyKey: draft.idempotencyKey,
+          kind: 'season',
+          seasonId: season!.id,
+          ...result,
+          sides: {
+            A: { teamId: myTeam!.id, ...result.sides.A },
+            B: { teamId: opponent!.id, ...result.sides.B },
+          },
         },
       });
     } else {
-      submit.mutate({ idempotencyKey: draft.idempotencyKey, kind: 'exhibition', ...result });
+      submit.mutate({
+        snapshot,
+        body: { idempotencyKey: draft.idempotencyKey, kind: 'exhibition', ...result },
+      });
     }
   };
   const labels = base
@@ -353,6 +436,7 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
     submit.error instanceof ApiRequestError &&
     (submit.error.code === 'STALE_REVISION' || submit.error.code === 'WINDOW_CLOSED');
   const blocked = submit.isPending || refused;
+  const retrying = !refused && (submit.isError || (attempted && submit.isIdle));
   // Why there is no season game to record, once that is known.
   const noSeasonGame =
     base || myTeam || !seasons.isSuccess || (season && !teams.isSuccess)
@@ -382,6 +466,25 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
           />
         </View>
       )}
+      {restored && onStartOver && (
+        <View testID="draft-restored" style={styles.section}>
+          <Text style={styles.muted}>
+            {restored.attempted
+              ? 'This game may not have reached the server. Press Retry to send it again; it won’t be recorded twice.'
+              : `Restored the game you started ${new Date(restored.playedAt).toLocaleString()} and haven’t sent yet.`}
+          </Text>
+          <Button
+            testID="discard-draft"
+            label="Discard and start over"
+            variant="secondary"
+            disabled={submit.isPending}
+            onPress={() => {
+              drafts?.clear();
+              onStartOver();
+            }}
+          />
+        </View>
+      )}
       {noSeasonGame && (
         <Text testID="no-season-game" style={styles.muted}>
           {noSeasonGame}
@@ -395,8 +498,9 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
       </Text>
       {base && (
         <Text testID="correction-note" style={styles.muted}>
-          Correcting the numbers resets everyone else’s confirmation. The window to confirm doesn’t
-          restart.
+          {base.game.openRevision
+            ? 'Correcting the numbers resets everyone else’s confirmation. The window to confirm doesn’t restart.'
+            : 'This reopens a confirmed game. Its confirmed result keeps counting until all four players confirm the correction, and a new window to confirm starts now.'}
         </Text>
       )}
       {(league.isError || members.isError || seasons.isError || teams.isError) && (
@@ -480,9 +584,7 @@ function RecordForm({ membership, correcting }: { membership: MyMembership; corr
 
       <Button
         testID="submit-game"
-        label={
-          submit.isPending ? labels.pending : submit.isError && !refused ? 'Retry' : labels.send
-        }
+        label={submit.isPending ? labels.pending : retrying ? 'Retry' : labels.send}
         disabled={!complete || violations.length > 0 || blocked}
         onPress={() => send(false)}
       />
@@ -575,7 +677,13 @@ function TeamPicker({ teams, onChoose }: { teams: Team[]; onChoose: (team: Team)
   return (
     <View style={styles.picker} testID="team-picker">
       {teams.map((t) => (
-        <Button key={t.id} label={t.name} variant="secondary" onPress={() => onChoose(t)} />
+        <Button
+          key={t.id}
+          testID={`opponent-${t.id}`}
+          label={t.name}
+          variant="secondary"
+          onPress={() => onChoose(t)}
+        />
       ))}
     </View>
   );
@@ -594,7 +702,13 @@ function MemberPicker({
   return (
     <View style={styles.picker} testID="member-picker">
       {members.map((m) => (
-        <Button key={m.id} label={m.displayName} variant="secondary" onPress={() => onChoose(m)} />
+        <Button
+          key={m.id}
+          testID={`member-option-${m.id}`}
+          label={m.displayName}
+          variant="secondary"
+          onPress={() => onChoose(m)}
+        />
       ))}
     </View>
   );

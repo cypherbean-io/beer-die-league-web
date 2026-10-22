@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError, getPlayerProfile } from '../../src/api/client';
 import { currentMembership, useMe } from '../../src/api/hooks';
-import { percent, perGame, SCOPE_NOTES, ScopeTabs } from '../../src/stats';
+import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../../src/stats';
 
 const LINES: Array<{ label: string; value: (p: PlayerStats) => string }> = [
   { label: 'Games played', value: (p) => String(p.gamesPlayed) },
@@ -32,6 +32,7 @@ export default function PlayerProfile() {
 function Profile({ membership, membershipId }: { membership: MyMembership; membershipId: string }) {
   const { leagueId } = membership;
   const [scope, setScope] = useState<StatsScope>('combined');
+  const seasons = useStatsSeasons(leagueId);
   const profile = useQuery({
     queryKey: ['stats', leagueId, 'player', membershipId, scope],
     queryFn: () => getPlayerProfile(leagueId, membershipId, scope),
@@ -48,9 +49,9 @@ function Profile({ membership, membershipId }: { membership: MyMembership; membe
           {player.membershipId === membership.id ? ' (you)' : ''}
         </Text>
       )}
-      <ScopeTabs value={scope} onChange={setScope} />
+      <ScopeTabs value={scope} seasons={seasons} onChange={setScope} />
       <Text style={styles.muted}>
-        {SCOPE_NOTES[scope]} A game counts once all four players confirm it.
+        {scopeNote(scope, seasons)} A game counts once all four players confirm it.
       </Text>
       {missing && <Text style={styles.error}>That player isn’t in this league.</Text>}
       {profile.isError && !missing && (

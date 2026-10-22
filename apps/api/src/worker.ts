@@ -1,16 +1,18 @@
-// Periodic sweep: drains the email outbox and materializes game expiry, which also finalizes
-// an ended season once its last open game expires. Purges join it in a later slice.
+// Periodic sweep: drains the email outbox, materializes game expiry (which also finalizes an
+// ended season once its last open game expires), and purges rows that no longer do anything.
 // Correctness never depends on this process running.
 import { systemClock } from './clock.ts';
 import { loadConfig } from './config.ts';
 import { createDb } from './db/client.ts';
 import { sweepExpired } from './domain/games.ts';
+import { purgeStale } from './domain/purge.ts';
 import { safeErrorFields, stdoutLog as log } from './log.ts';
 import { drainOutbox } from './mail/outbox.ts';
 import { createSmtpTransport } from './mail/transport.ts';
 
 const TICK_MS = 2000;
 const EXPIRY_SWEEP_MS = 60_000;
+const PURGE_MS = 10 * 60_000;
 
 const config = loadConfig(process.env);
 const { db, close } = createDb(config.databaseUrl);
@@ -21,6 +23,7 @@ let timer: NodeJS.Timeout | undefined;
 let current: Promise<void> = Promise.resolve();
 // Monotonic, so a wall-clock step can't stall or rush the sweep.
 let nextExpirySweep = 0;
+let nextPurge = 0;
 
 // Every 60 s, or on the next tick while a backlog remains.
 async function sweepExpiry(): Promise<void> {
@@ -32,6 +35,19 @@ async function sweepExpiry(): Promise<void> {
     if (!done) nextExpirySweep = 0;
   } catch (err) {
     log({ level: 'error', msg: 'expiry sweep failed', ...safeErrorFields(err) });
+  }
+}
+
+// Every 10 minutes, or on the next tick while a backlog remains.
+async function purge(): Promise<void> {
+  if (performance.now() < nextPurge) return;
+  nextPurge = performance.now() + PURGE_MS;
+  try {
+    const { purged, done } = await purgeStale({ db, clock: systemClock });
+    if (Object.values(purged).some((n) => n > 0)) log({ level: 'info', msg: 'purge', ...purged });
+    if (!done) nextPurge = 0;
+  } catch (err) {
+    log({ level: 'error', msg: 'purge failed', ...safeErrorFields(err) });
   }
 }
 
@@ -51,6 +67,7 @@ async function tick(): Promise<void> {
     log({ level: 'error', msg: 'outbox drain failed', ...safeErrorFields(err) });
   }
   await sweepExpiry();
+  await purge();
 }
 
 function schedule(): void {

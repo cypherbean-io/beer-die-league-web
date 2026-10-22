@@ -45,3 +45,31 @@ services:
 
   backup:
     image: beer-die-league-web/backup
+
+  # The Playwright suite (SPEC §5.3), run by `npm run e2e` (scripts/e2e.ts), which seeds a
+  # league per spec through the CLI first. It shares the web container's network, so
+  # https://localhost is Caddy, exactly as APP_ORIGIN says, and `mailpit` resolves. Only what
+  # the suite needs is mounted, read-only with the host's node_modules, so nothing else in the
+  # checkout (a local .env, say) is visible to the image. playwright-report/ alone is writable,
+  # as the host user. Playwright empties its output directories by removing them, which a
+  # mount point can't be, so they are subdirectories of it.
+  e2e:
+    profiles: [e2e]
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    network_mode: service:web
+    init: true
+    shm_size: 1gb
+    user: '${E2E_UID:-1000}:${E2E_GID:-1000}'
+    working_dir: /repo
+    environment:
+      CI: '1'
+      HOME: /tmp
+      E2E_RUN: ${E2E_RUN:-}
+    volumes:
+      - ./package.json:/repo/package.json:ro
+      - ./tsconfig.base.json:/repo/tsconfig.base.json:ro
+      - ./playwright.config.ts:/repo/playwright.config.ts:ro
+      - ./e2e:/repo/e2e:ro
+      - ./node_modules:/repo/node_modules:ro
+      - ./playwright-report:/repo/playwright-report
+    command: [node, node_modules/@playwright/test/cli.js, test]
