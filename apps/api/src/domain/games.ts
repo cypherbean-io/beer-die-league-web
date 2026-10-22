@@ -4,8 +4,11 @@ import {
   type CorrectGameBody,
   type ForceConfirmBody,
   Game,
+  GameDetailResponse,
   type GamePlayer,
   type GameRevision,
+  GAMES_PAGE_MAX,
+  type GamesResponse,
   INBOX_MAX,
   LeagueRules,
   type OverrideDecisionBody,
@@ -21,12 +24,14 @@ import {
   and,
   type AnyColumn,
   asc,
+  desc,
   eq,
   exists,
   gt,
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   max,
   ne,
@@ -54,7 +59,7 @@ import {
   OVERRIDE_REQUESTED,
   overrideRequestedParams,
 } from '../mail/templates.ts';
-import { recordAudit } from './audit.ts';
+import { listGameAudit, recordAudit } from './audit.ts';
 import { expireLapsed } from './expiry.ts';
 import { type Actor, assertCommissioner } from './membership.ts';
 import { settleSeason } from './seasons.ts';
@@ -602,7 +607,7 @@ async function mailCommissioners(
         ne(memberships.id, actor.id),
       ),
     );
-  const params = overrideRequestedParams(author.displayName, `${appOrigin}/`);
+  const params = overrideRequestedParams(author.displayName, `${appOrigin}/overrides`);
   for (const { userId } of commissioners) {
     await enqueueEmail(tx, { userId, template: OVERRIDE_REQUESTED, params, now });
   }
@@ -1258,6 +1263,109 @@ export async function listInbox(deps: Deps, actor: Actor): Promise<Game[]> {
     },
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
+}
+
+const GAMES_PAGE_DEFAULT = 20;
+
+// What expireLapsed would make of a game whose window has lapsed, without writing it: reads
+// treat `now ≥ window_expires_at` as expired even before a write or the sweep settles it.
+function asOf(game: Game, now: Date): Game {
+  const { openRevision, windowExpiresAt } = game;
+  if (!openRevision || !windowExpiresAt || now.getTime() < Date.parse(windowExpiresAt)) {
+    return game;
+  }
+  return {
+    ...game,
+    status: game.confirmedRevision === null ? 'expired' : game.status,
+    windowExpiresAt: null,
+    openRevision: null,
+  };
+}
+
+const readOnly = { isolationLevel: 'repeatable read', accessMode: 'read only' } as const;
+
+// Every member may list the league's games. Newest first, paging backwards with a `before`
+// cursor; `awaiting=override` keeps only games whose open revision waits on a commissioner's
+// review and whose window is still open.
+export async function listGames(
+  deps: Deps,
+  actor: Actor,
+  query: { before?: string | undefined; limit?: number | undefined; awaiting?: 'override' },
+): Promise<GamesResponse> {
+  const now = deps.clock.now();
+  const limit = Math.min(query.limit ?? GAMES_PAGE_DEFAULT, GAMES_PAGE_MAX);
+  return deps.db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: games.id })
+      .from(games)
+      .leftJoin(gameRevisions, eq(gameRevisions.id, games.openRevisionId))
+      .where(
+        and(
+          eq(games.leagueId, actor.leagueId),
+          query.before === undefined ? undefined : lt(games.id, query.before),
+          query.awaiting === 'override'
+            ? and(
+                eq(gameRevisions.status, 'open'),
+                eq(gameRevisions.overrideStatus, 'requested'),
+                gt(games.windowExpiresAt, now),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(games.id))
+      // One extra row tells whether another page exists.
+      .limit(limit + 1);
+    const page = rows.slice(0, limit);
+    const loaded = await loadGames(
+      tx,
+      page.map((g) => g.id),
+    );
+    return {
+      games: loaded.map((g) => asOf(g, now)),
+      nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null,
+    };
+  }, readOnly);
+}
+
+// One game with every revision it has had and the log's entries about it, read in one
+// snapshot. A game outside the caller's league is a 404, like an unknown one.
+export async function getGameDetail(
+  deps: Deps,
+  actor: Actor,
+  gameId: string,
+): Promise<GameDetailResponse> {
+  const now = deps.clock.now();
+  return deps.db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ openRevisionId: games.openRevisionId })
+      .from(games)
+      .where(and(eq(games.id, gameId), eq(games.leagueId, actor.leagueId)));
+    if (!row) throw notFound();
+    const game = asOf(await loadGame(tx, gameId), now);
+    // The open revision a lapsed window expired, as expireLapsed would mark it.
+    const lapsed = row.openRevisionId !== null && game.openRevision === null;
+    const history = await tx
+      .select({ id: gameRevisions.id, createdAt: gameRevisions.createdAt })
+      .from(gameRevisions)
+      .where(eq(gameRevisions.gameId, gameId))
+      .orderBy(asc(gameRevisions.number));
+    const loaded = await loadRevisions(
+      tx,
+      history.map((r) => r.id),
+    );
+    const revisions = history.map(({ id, createdAt }) => {
+      const revision = loaded.get(id);
+      if (!revision) throw new Error('revision is missing');
+      const expired = lapsed && id === row.openRevisionId && revision.status === 'open';
+      return {
+        ...revision,
+        status: expired ? ('expired' as const) : revision.status,
+        createdAt: createdAt.toISOString(),
+      };
+    });
+    const audit = await listGameAudit(tx, actor, gameId);
+    return GameDetailResponse.parse({ game, revisions, audit });
+  }, readOnly);
 }
 
 async function loadRevisions(tx: Tx, ids: string[]): Promise<Map<string, GameRevision>> {

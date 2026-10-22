@@ -178,6 +178,7 @@ describe('league bootstrap', () => {
         displayName: 'Ana',
         role: 'commissioner',
         status: 'approved',
+        emailNotifications: true,
       },
     ]);
   });
@@ -691,6 +692,8 @@ const LEAGUE_ROUTES: Route[] = [
   { method: 'POST', path: '/api/leagues/:leagueId/invites', commissioner: true, body: {} },
   { method: 'GET', path: '/api/leagues/:leagueId/invites', commissioner: true },
   { method: 'DELETE', path: '/api/leagues/:leagueId/invites/:iid', commissioner: true },
+  { method: 'GET', path: '/api/leagues/:leagueId/games', commissioner: false },
+  { method: 'GET', path: '/api/leagues/:leagueId/games/:gid', commissioner: false },
   {
     method: 'POST',
     path: '/api/leagues/:leagueId/games',

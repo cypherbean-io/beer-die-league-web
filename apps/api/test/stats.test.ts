@@ -558,7 +558,7 @@ describe('player stats', () => {
   it.each([
     ['no scope', ''],
     ['an unknown scope', '?scope=lifetime'],
-    ['a season scope, which arrives with seasons', `?scope=season:${randomUUID()}`],
+    ['a season scope with a malformed id', '?scope=season:nope'],
     ['an unknown parameter', '?scope=combined&sort=wins'],
   ])('rejects %s with 422 VALIDATION', async (_label, query) => {
     const t = await table();
@@ -913,7 +913,7 @@ describe('partnership stats', () => {
   it.each([
     ['no scope', ''],
     ['an unknown scope', '?scope=lifetime'],
-    ['a season scope, which arrives with seasons', `?scope=season:${randomUUID()}`],
+    ['a season scope with a malformed id', '?scope=season:nope'],
     ['an unknown parameter', '?scope=combined&sort=wins'],
   ])('rejects %s with 422 VALIDATION', async (_label, query) => {
     const t = await table();

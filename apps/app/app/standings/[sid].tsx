@@ -86,9 +86,11 @@ function SeasonStandings({ membership, seasonId }: { membership: MyMembership; s
             {rows.map((r) => (
               <View key={r.team.id} style={styles.row} testID={`standings-row-${r.team.id}`}>
                 <Text style={styles.rank}>{rankLabel(r)}</Text>
-                <Text style={styles.team}>{r.team.name}</Text>
+                <Text style={styles.team} testID="cell-team">
+                  {r.team.name}
+                </Text>
                 {COLUMNS.map((c) => (
-                  <Text key={c.label} style={styles.cell}>
+                  <Text key={c.label} style={styles.cell} testID={`cell-${c.label.toLowerCase()}`}>
                     {c.value(r)}
                   </Text>
                 ))}

@@ -2,7 +2,10 @@ import {
   CorrectGameBody,
   EmptyBody,
   ForceConfirmBody,
+  type GameDetailResponse,
   type GameResponse,
+  GamesQuery,
+  type GamesResponse,
   OverrideDecisionBody,
   SubmitGameBody,
 } from '@beer-die/core';
@@ -14,14 +17,26 @@ import {
   correctGame,
   decideOverride,
   forceConfirm,
+  getGameDetail,
+  listGames,
   submitGame,
 } from '../domain/games.ts';
-import { idParam, readJson } from '../http.ts';
+import { idParam, readJson, readQuery } from '../http.ts';
 
 // Mounted inside leagueRoutes, which has already resolved the caller's membership.
 export function gameRoutes(deps: AppDeps) {
   return (
     new Hono<LeagueEnv>()
+      // Every member may read every game in the league.
+      .get('/games', async (c) => {
+        const query = readQuery(c, GamesQuery);
+        const page = await listGames(deps, c.get('membership')!, query);
+        return c.json(page satisfies GamesResponse);
+      })
+      .get('/games/:gid', async (c) => {
+        const detail = await getGameDetail(deps, c.get('membership')!, idParam(c, 'gid'));
+        return c.json(detail satisfies GameDetailResponse);
+      })
       .post('/games', async (c) => {
         const body = await readJson(c, SubmitGameBody);
         const { game, created } = await submitGame(deps, c.get('membership')!, body);

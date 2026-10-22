@@ -34,24 +34,17 @@ it.
 | Migrate | `docker compose run --rm migrate`, after the services are up |
 | New migration | `npx drizzle-kit generate`, run in `apps/api`; commit the generated SQL |
 | Dev sign-in codes | Mailpit UI at `http://localhost:8025` (the worker delivers them within a few seconds) |
-| Test (all) | `npm test` (core unit tests + API integration tests; needs `db` running) |
+| Test (all) | `npm test` (core and app unit tests + API integration tests; needs `db` running) |
 | Test (stack) | `npm run test:stack`: Caddy, the API behind it, and backups, against the whole stack. Bring it up first with `npm run stack -- build && npm run stack -- up -d --wait db mailpit migrate api worker web`. |
+| E2E | `npm run e2e`: the Playwright specs in `e2e/`, in the `e2e` service of `compose.test.yaml`, against the stack brought up as for Test (stack). It seeds a league per spec through the CLI first, which the Playwright container can't run, so it wraps SPEC.md §6 step 4's bare `run --rm e2e`. Report in `playwright-report/html/`. |
 | Test (single file) | `npx vitest run <path/to/file.test.ts>` |
 | Lint | `npm run lint` (ESLint, then `prettier --check`) |
 | Format | `npm run format` |
-| Typecheck | `npm run typecheck` (root scripts, then every workspace) |
+| Typecheck | `npm run typecheck` (root scripts, `e2e/`, then every workspace) |
 | Build | `npm run build` (`expo export --platform web` into `apps/app/dist`; the API has no build step). The `web` image runs it too. |
-| Verify (all checks) | `npm run verify`: builds the images, brings the whole stack up with `compose.test.yaml`, then typecheck, lint, test, and stack tests |
+| Verify (all checks) | `npm run verify`: builds the images, brings the whole stack up with `compose.test.yaml`, then typecheck, lint, test, stack tests, and E2E |
 | Production | `docker compose -f compose.yaml up -d --build --wait`, with the variables listed at the top of `compose.yaml` in `.env`. Bootstrap with `docker compose -f compose.yaml exec api node src/cli.ts create-league …`. |
 | Bootstrap a league | `DATABASE_URL=postgres://postgres@127.0.0.1:5432/beerdie npm run cli -w apps/api -- create-league --name … --commissioner-email … --display-name …` (after Migrate). Prints the new ids only. `promote-commissioner --league-id … --email …` recovers a league with no commissioner. |
-
-> **Not wired yet.** These come from SPEC.md and land in later delivery slices. Move each
-> row into the table above once it works.
->
-> | Task | Command | Lands in |
-> | --- | --- | --- |
-> | E2E | `docker compose -f compose.yaml -f compose.test.yaml run --rm e2e` | slice 8 |
-> | Full `verify` | SPEC.md §6 step 4: E2E after the stack tests | slice 8 |
 
 Prefer running a single test file over the whole suite while iterating.
 

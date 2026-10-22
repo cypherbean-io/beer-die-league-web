@@ -195,17 +195,25 @@ describe.each([
   ['PlayerStatsQuery', PlayerStatsQuery],
   ['PartnershipStatsQuery', PartnershipStatsQuery],
 ])('%s', (_name, StatsQuery) => {
-  it.each(['alltime', 'exhibition', 'combined'])('accepts the scope %j', (scope) => {
-    expect(StatsQuery.parse({ scope })).toEqual({ scope });
-  });
+  it.each(['alltime', 'exhibition', 'combined', 'season:0199f3a2-5c1e-7a00-8000-000000000000'])(
+    'accepts the scope %j',
+    (scope) => {
+      expect(StatsQuery.parse({ scope })).toEqual({ scope });
+    },
+  );
 
   it.each([
     ['no scope', {}],
     ['an empty scope', { scope: '' }],
     ['an unknown scope', { scope: 'lifetime' }],
     ['a scope in another case', { scope: 'Combined' }],
-    // Season scopes arrive with seasons (SPEC §3.10, slice 5).
-    ['a season scope', { scope: 'season:0199f3a2-5c1e-7a00-8000-000000000000' }],
+    ['a season scope without an id', { scope: 'season:' }],
+    ['a season scope with a malformed id', { scope: 'season:0199f3a2' }],
+    ['a season scope in another case', { scope: 'Season:0199f3a2-5c1e-7a00-8000-000000000000' }],
+    [
+      'a season scope with trailing text',
+      { scope: 'season:0199f3a2-5c1e-7a00-8000-000000000000x' },
+    ],
     ['an unknown parameter', { scope: 'combined', sort: 'wins' }],
   ])('rejects %s', (_label, query) => {
     expect(StatsQuery.safeParse(query).success).toBe(false);

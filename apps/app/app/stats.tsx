@@ -11,32 +11,39 @@ import { Fragment, useState } from 'react';
 import { ScrollView, StyleSheet, Text, type TextStyle, View } from 'react-native';
 import { getPartnershipStats, getPlayerStats } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
-import { percent, perGame, SCOPE_NOTES, ScopeTabs } from '../src/stats';
+import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../src/stats';
 
-type Column<T> = { label: string; title: string; value: (row: T) => string };
+// `id` names a cell's testID within its row.
+type Column<T> = { id: string; label: string; title: string; value: (row: T) => string };
 
 const COLUMNS: Array<Column<PlayerStats>> = [
-  { label: 'GP', title: 'Games played', value: (p) => String(p.gamesPlayed) },
-  { label: 'W', title: 'Wins', value: (p) => String(p.wins) },
-  { label: 'L', title: 'Losses', value: (p) => String(p.losses) },
-  { label: 'Win%', title: 'Win percentage', value: (p) => percent(p.winPct) },
-  { label: 'Pts', title: 'Points, sink points included', value: (p) => String(p.points) },
-  { label: 'PPG', title: 'Points per game', value: (p) => perGame(p.pointsPerGame, 1) },
-  { label: 'Sinks', title: 'Sinks', value: (p) => String(p.sinks) },
-  { label: 'S/G', title: 'Sinks per game', value: (p) => perGame(p.sinksPerGame, 2) },
+  { id: 'gp', label: 'GP', title: 'Games played', value: (p) => String(p.gamesPlayed) },
+  { id: 'w', label: 'W', title: 'Wins', value: (p) => String(p.wins) },
+  { id: 'l', label: 'L', title: 'Losses', value: (p) => String(p.losses) },
+  { id: 'win-pct', label: 'Win%', title: 'Win percentage', value: (p) => percent(p.winPct) },
+  {
+    id: 'pts',
+    label: 'Pts',
+    title: 'Points, sink points included',
+    value: (p) => String(p.points),
+  },
+  { id: 'ppg', label: 'PPG', title: 'Points per game', value: (p) => perGame(p.pointsPerGame, 1) },
+  { id: 'sinks', label: 'Sinks', title: 'Sinks', value: (p) => String(p.sinks) },
+  { id: 'sg', label: 'S/G', title: 'Sinks per game', value: (p) => perGame(p.sinksPerGame, 2) },
 ];
 
 const PAIR_COLUMNS: Array<Column<PartnershipStats>> = [
-  { label: 'GP', title: 'Games played together', value: (p) => String(p.gamesPlayed) },
-  { label: 'W', title: 'Wins', value: (p) => String(p.wins) },
-  { label: 'L', title: 'Losses', value: (p) => String(p.losses) },
-  { label: 'Win%', title: 'Win percentage', value: (p) => percent(p.winPct) },
+  { id: 'gp', label: 'GP', title: 'Games played together', value: (p) => String(p.gamesPlayed) },
+  { id: 'w', label: 'W', title: 'Wins', value: (p) => String(p.wins) },
+  { id: 'l', label: 'L', title: 'Losses', value: (p) => String(p.losses) },
+  { id: 'win-pct', label: 'Win%', title: 'Win percentage', value: (p) => percent(p.winPct) },
   {
+    id: 'pts',
     label: 'Pts',
     title: 'Both players’ points, sink points included',
     value: (p) => String(p.points),
   },
-  { label: 'Sinks', title: 'Both players’ sinks', value: (p) => String(p.sinks) },
+  { id: 'sinks', label: 'Sinks', title: 'Both players’ sinks', value: (p) => String(p.sinks) },
 ];
 
 export default function Stats() {
@@ -52,6 +59,7 @@ export default function Stats() {
 function StatsTable({ membership }: { membership: MyMembership }) {
   const { leagueId } = membership;
   const [scope, setScope] = useState<StatsScope>('combined');
+  const seasons = useStatsSeasons(leagueId);
   const stats = useQuery({
     queryKey: ['stats', leagueId, 'players', scope],
     queryFn: () => getPlayerStats(leagueId, scope),
@@ -66,9 +74,9 @@ function StatsTable({ membership }: { membership: MyMembership }) {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Stack.Screen options={{ title: 'Stats' }} />
-      <ScopeTabs value={scope} onChange={setScope} />
+      <ScopeTabs value={scope} seasons={seasons} onChange={setScope} />
       <Text style={styles.muted}>
-        {SCOPE_NOTES[scope]} A game counts once all four players confirm it.
+        {scopeNote(scope, seasons)} A game counts once all four players confirm it.
       </Text>
       {(stats.isError || pairStats.isError) && (
         <Text style={styles.error}>
@@ -159,7 +167,7 @@ function Cells<T>({ row, columns }: { row: T; columns: Array<Column<T>> }) {
   return (
     <>
       {columns.map((c) => (
-        <Text key={c.label} style={styles.cell}>
+        <Text key={c.label} style={styles.cell} testID={`cell-${c.id}`}>
           {c.value(row)}
         </Text>
       ))}

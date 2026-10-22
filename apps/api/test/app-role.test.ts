@@ -4,6 +4,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
 import { provisionAppRole, provisionBackupRole } from '../src/db/migrate.ts';
+import { purgeStale } from '../src/domain/purge.ts';
 import { freshDatabase } from './support/db.ts';
 import { client, createLeague, signIn } from './support/league.ts';
 import { startApi } from './support/server.ts';
@@ -85,6 +86,22 @@ describe('the app role provisioned by migrate', () => {
       expect(league.status).toBe(200);
       expect(LeagueResponse.parse(await league.json()).league.name).toBe('Basement League');
       expect(deleted.status).toBe(204);
+    } finally {
+      await api.stop();
+    }
+  });
+
+  it("runs the worker's purge, which deletes a user who never joined a league", async () => {
+    const clock = new FixedClock('2026-10-21T12:00:00.000Z');
+    const api = await startApi(asRole(database.url, role), { clock });
+    try {
+      await signIn(api.db, clock, 'lurker@example.com');
+      clock.advance(31 * 24 * 60 * 60 * 1000);
+
+      await purgeStale({ db: api.db, clock });
+
+      const left = await admin`select 1 from users where email = 'lurker@example.com'`;
+      expect(left).toHaveLength(0);
     } finally {
       await api.stop();
     }

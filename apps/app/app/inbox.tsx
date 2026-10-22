@@ -1,29 +1,12 @@
-import {
-  type Game,
-  type GamePlayer,
-  type GameRevision,
-  INBOX_MAX,
-  type MyMembership,
-} from '@beer-die/core';
+import { type Game, type GameRevision, INBOX_MAX, type MyMembership } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Redirect, Stack, useRouter } from 'expo-router';
+import { Link, Redirect, Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
+import { type ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
+import { isRefusal, kindLabel, refusalFor, RevisionView } from '../src/game';
 import { Button } from '../src/ui';
-
-// Refusals that mean the list is out of date, as opposed to a failed request worth retrying.
-const STALE_CODES = new Set(['WINDOW_CLOSED', 'STALE_REVISION']);
-
-const isRefusal = (error: unknown): error is ApiRequestError =>
-  error instanceof ApiRequestError && STALE_CODES.has(error.code);
-
-function refusalFor(error: ApiRequestError): string {
-  return error.code === 'WINDOW_CLOSED'
-    ? 'The window to confirm that game closed, so it won’t count.'
-    : 'That game changed after you loaded it, so it wasn’t confirmed. Check the latest numbers.';
-}
 
 export default function Inbox() {
   const me = useMe();
@@ -130,8 +113,7 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
   return (
     <View style={styles.game} testID="inbox-game">
       <Text style={styles.muted}>
-        {game.kind === 'season' ? 'Season game' : 'Exhibition game'}, played{' '}
-        {new Date(revision.playedAt).toLocaleString()}
+        {kindLabel(game)}, played {new Date(revision.playedAt).toLocaleString()}
       </Text>
       {revision.number > 1 && (
         <Text testID="inbox-corrected" style={styles.muted}>
@@ -140,34 +122,7 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
             : `Corrected by ${authorName}, so earlier confirmations were reset.`}
         </Text>
       )}
-      {(['A', 'B'] as const).map((side) => (
-        <View key={side} style={styles.side} testID={`inbox-side-${side}`}>
-          <Text style={styles.heading}>
-            Side {side}
-            {revision.teams ? ` · ${revision.teams[side].name}` : ''}
-            {revision.winner === side ? ' (won)' : ''}
-          </Text>
-          {revision.players
-            .filter((p) => p.side === side)
-            .map((p) => (
-              <PlayerRow key={p.membershipId} player={p} isMe={p.membershipId === myId} />
-            ))}
-        </View>
-      ))}
-      {revision.ruleViolations.length > 0 && (
-        <View testID="inbox-violations">
-          <Text style={styles.error}>
-            {revision.overrideStatus === 'approved'
-              ? 'This result breaks the league rules, but a commissioner approved it:'
-              : 'This result breaks the league rules, so it counts only if a commissioner approves it:'}
-          </Text>
-          {revision.ruleViolations.map((v) => (
-            <Text key={v.code} style={styles.error}>
-              • {v.message}
-            </Text>
-          ))}
-        </View>
-      )}
+      <RevisionView revision={revision} myId={myId} idPrefix="inbox" />
       {game.windowExpiresAt !== null && (
         <Text style={styles.muted}>
           Confirm by {new Date(game.windowExpiresAt).toLocaleString()}, or{' '}
@@ -192,37 +147,22 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
           Couldn’t confirm the game. Check your connection and try again.
         </Text>
       )}
+      <Link
+        href={{ pathname: '/games/[gid]', params: { gid: game.id } }}
+        testID="inbox-game-link"
+        style={styles.link}
+      >
+        Open the game
+      </Link>
     </View>
-  );
-}
-
-function PlayerRow({ player, isMe }: { player: GamePlayer; isMe: boolean }) {
-  const state =
-    player.confirmation === 'player'
-      ? '✓'
-      : player.confirmation === 'forced'
-        ? '✓ forced'
-        : 'pending';
-  return (
-    <Text testID={`inbox-player-${player.membershipId}`}>
-      <Text style={styles.name}>
-        {player.displayName}
-        {isMe ? ' (you)' : ''}
-        {player.isSub ? ' (sub)' : ''}
-      </Text>
-      : {player.points} {player.points === 1 ? 'point' : 'points'}, {player.sinks}{' '}
-      {player.sinks === 1 ? 'sink' : 'sinks'} · {state}
-    </Text>
   );
 }
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 16, maxWidth: 560 },
   game: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12, gap: 8 },
-  side: { gap: 2 },
-  heading: { fontSize: 16, fontWeight: '700' },
-  name: { fontWeight: '600' },
   notice: { color: '#14532d' },
+  link: { color: '#1d4ed8', paddingVertical: 4 },
   muted: { color: '#555' },
   error: { color: '#b91c1c' },
 });

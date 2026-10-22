@@ -52,6 +52,10 @@ export function rateLimitKey(secret: string, kind: RateLimitKind, value: string)
   return `${kind}:${hmacHex(secret, `rate-limit:${kind}:${value}`)}`;
 }
 
+// The longest window any limit may use. The worker deletes windows older than this
+// (domain/purge.ts), so a longer one would be forgotten early.
+export const RATE_LIMIT_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 // Records one hit and reports whether it is within `limit` for the current window. The
 // window starts at the first hit and resets once it is `windowMs` old. A single upsert, so
 // concurrent hits are all counted.
@@ -62,6 +66,9 @@ export async function hit(
   windowMs: number,
   now: Date,
 ): Promise<boolean> {
+  if (windowMs > RATE_LIMIT_MAX_WINDOW_MS) {
+    throw new RangeError('A rate-limit window may be at most RATE_LIMIT_MAX_WINDOW_MS');
+  }
   const stale = sql`${rateLimits.windowStart} <= ${new Date(now.getTime() - windowMs).toISOString()}::timestamptz`;
   const [row] = await db
     .insert(rateLimits)

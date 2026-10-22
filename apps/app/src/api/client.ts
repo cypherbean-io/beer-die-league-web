@@ -3,8 +3,11 @@ import {
   type CorrectGameBody,
   CreateInviteResponse,
   ErrorBody,
+  type ForceConfirmBody,
   type Game,
+  GameDetailResponse,
   GameResponse,
+  GamesResponse,
   HealthResponse,
   InboxResponse,
   type Invite,
@@ -17,6 +20,7 @@ import {
   type MembershipRole,
   MeResponse,
   type MyMembership,
+  type OverrideDecisionBody,
   type PartnershipStats,
   PartnershipStatsResponse,
   type PlayerStats,
@@ -34,6 +38,7 @@ import {
   type Team,
   TeamResponse,
   TeamsResponse,
+  type UpdateMeBody,
   VerifyCodeResponse,
 } from '@beer-die/core';
 
@@ -125,6 +130,13 @@ export async function deleteAccount(keepDisplayName: boolean): Promise<void> {
   await expectOk(await sendJson('DELETE', '/api/me', { keepDisplayName }));
 }
 
+// My display name and email setting, in every league I belong to.
+export async function updateMe(patch: UpdateMeBody): Promise<MeResponse> {
+  const res = await sendJson('PATCH', '/api/me', patch);
+  if (!res.ok) throw await failure(res);
+  return MeResponse.parse(await res.json());
+}
+
 export async function joinLeague(token: string, displayName: string): Promise<MyMembership> {
   const res = await postJson(`/api/invites/${encodeURIComponent(token)}/join`, { displayName });
   if (!res.ok) throw await failure(res);
@@ -177,6 +189,54 @@ export async function correctGame(
   return GameResponse.parse(await res.json()).game;
 }
 
+// The league's games, newest first; pass the previous page's `nextBefore` to read further
+// back. `awaiting: 'override'` lists only games waiting on a commissioner's review.
+export async function listGames(
+  leagueId: string,
+  opts: { before?: string; awaiting?: 'override' } = {},
+): Promise<GamesResponse> {
+  const query = new URLSearchParams();
+  if (opts.before !== undefined) query.set('before', opts.before);
+  if (opts.awaiting !== undefined) query.set('awaiting', opts.awaiting);
+  const qs = query.size === 0 ? '' : `?${query.toString()}`;
+  return getJson(`${leaguePath(leagueId)}/games${qs}`, GamesResponse);
+}
+
+// One game with every revision it has had and the log's entries about it.
+export async function getGame(leagueId: string, gameId: string): Promise<GameDetailResponse> {
+  return getJson(`${leaguePath(leagueId)}/games/${encodeURIComponent(gameId)}`, GameDetailResponse);
+}
+
+function revisionPath(leagueId: string, gameId: string, revisionId: string, action: string) {
+  return `${leaguePath(leagueId)}/games/${encodeURIComponent(gameId)}/revisions/${encodeURIComponent(revisionId)}/${action}`;
+}
+
+// Commissioners only: confirms the revision shown for players who have stayed silent.
+export async function forceConfirm(
+  leagueId: string,
+  gameId: string,
+  revisionId: string,
+  body: ForceConfirmBody,
+): Promise<Game> {
+  const res = await postJson(revisionPath(leagueId, gameId, revisionId, 'force-confirm'), body);
+  if (!res.ok) throw await failure(res);
+  return GameResponse.parse(await res.json()).game;
+}
+
+// Commissioners only: approves or rejects the rule-breaking revision shown.
+export async function decideOverride(
+  leagueId: string,
+  gameId: string,
+  revisionId: string,
+  decision: OverrideDecisionBody['decision'],
+): Promise<Game> {
+  const res = await postJson(revisionPath(leagueId, gameId, revisionId, 'override'), {
+    decision,
+  });
+  if (!res.ok) throw await failure(res);
+  return GameResponse.parse(await res.json()).game;
+}
+
 // Games whose open revision awaits my confirmation, soonest to expire first.
 export async function getInbox(leagueId: string): Promise<Game[]> {
   return (await getJson(`${leaguePath(leagueId)}/inbox`, InboxResponse)).games;
@@ -188,8 +248,7 @@ export async function confirmRevision(
   gameId: string,
   revisionId: string,
 ): Promise<Game> {
-  const path = `${leaguePath(leagueId)}/games/${encodeURIComponent(gameId)}/revisions/${encodeURIComponent(revisionId)}/confirm`;
-  const res = await postJson(path, {});
+  const res = await postJson(revisionPath(leagueId, gameId, revisionId, 'confirm'), {});
   if (!res.ok) throw await failure(res);
   return GameResponse.parse(await res.json()).game;
 }

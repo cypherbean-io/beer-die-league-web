@@ -37,38 +37,81 @@ export async function recordAudit(
   });
 }
 
-// Every member may read the log. Newest first, paging backwards with a `before` cursor.
+const auditColumns = {
+  id: auditEvents.id,
+  createdAt: auditEvents.createdAt,
+  actorMembershipId: auditEvents.actorMembershipId,
+  actorDisplayName: memberships.displayName,
+  actorWasParticipant: auditEvents.actorWasParticipant,
+  action: auditEvents.action,
+  targetType: auditEvents.targetType,
+  targetId: auditEvents.targetId,
+  details: auditEvents.details,
+};
+
+type AuditRow = {
+  id: string;
+  createdAt: Date;
+  actorMembershipId: string;
+  actorDisplayName: string;
+  actorWasParticipant: boolean;
+  action: string;
+  targetType: string;
+  targetId: string;
+  details: unknown;
+};
+
+// Every member may read the log. Newest first, paging backwards with a `before` cursor. One
+// snapshot, so the names an entry shows are read as of the same moment as the entry.
 export async function listAudit(
   db: Db,
   actor: Actor,
   query: { before?: string | undefined; limit?: number | undefined },
 ): Promise<AuditResponse> {
   const limit = Math.min(query.limit ?? DEFAULT_PAGE, AUDIT_PAGE_MAX);
-  const rows = await db
-    .select({
-      id: auditEvents.id,
-      createdAt: auditEvents.createdAt,
-      actorMembershipId: auditEvents.actorMembershipId,
-      actorDisplayName: memberships.displayName,
-      actorWasParticipant: auditEvents.actorWasParticipant,
-      action: auditEvents.action,
-      targetType: auditEvents.targetType,
-      targetId: auditEvents.targetId,
-      details: auditEvents.details,
-    })
+  return db.transaction(
+    async (tx) => {
+      const rows = await tx
+        .select(auditColumns)
+        .from(auditEvents)
+        .innerJoin(memberships, eq(memberships.id, auditEvents.actorMembershipId))
+        .where(
+          and(
+            eq(auditEvents.leagueId, actor.leagueId),
+            query.before === undefined ? undefined : lt(auditEvents.id, query.before),
+          ),
+        )
+        .orderBy(desc(auditEvents.id))
+        // One extra row tells whether another page exists.
+        .limit(limit + 1);
+      const page = rows.slice(0, limit);
+      const events = await nameAuditRows(tx, actor, page);
+      return { events, nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null };
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
+}
+
+// The log's entries about one game, oldest first: its most recent AUDIT_PAGE_MAX, which is more
+// than a game ever collects. Read inside the caller's snapshot.
+export async function listGameAudit(tx: Tx, actor: Actor, gameId: string): Promise<AuditEvent[]> {
+  const rows = await tx
+    .select(auditColumns)
     .from(auditEvents)
     .innerJoin(memberships, eq(memberships.id, auditEvents.actorMembershipId))
     .where(
       and(
         eq(auditEvents.leagueId, actor.leagueId),
-        query.before === undefined ? undefined : lt(auditEvents.id, query.before),
+        eq(auditEvents.targetType, 'game'),
+        eq(auditEvents.targetId, gameId),
       ),
     )
     .orderBy(desc(auditEvents.id))
-    // One extra row tells whether another page exists.
-    .limit(limit + 1);
+    .limit(AUDIT_PAGE_MAX);
+  return nameAuditRows(tx, actor, rows.reverse());
+}
 
-  const page = rows.slice(0, limit);
+async function nameAuditRows(tx: Tx, actor: Actor, page: AuditRow[]): Promise<AuditEvent[]> {
   // A forced confirmation names the player it was for, a removal the member removed, and a
   // roster change the players before and after. Names are looked up now, not stored, so the log
   // shows a renamed or anonymized member as they are today.
@@ -95,7 +138,7 @@ export async function listAudit(
   const players =
     playerIds.size === 0
       ? []
-      : await db
+      : await tx
           .select({ membershipId: memberships.id, displayName: memberships.displayName })
           .from(memberships)
           .where(
@@ -110,7 +153,7 @@ export async function listAudit(
   const seasonRows =
     seasonIds.length === 0
       ? []
-      : await db
+      : await tx
           .select({ id: seasons.id, name: seasons.name })
           .from(seasons)
           .where(and(eq(seasons.leagueId, actor.leagueId), inArray(seasons.id, seasonIds)));
@@ -122,7 +165,7 @@ export async function listAudit(
   const teamRows =
     teamIds.length === 0
       ? []
-      : await db
+      : await tx
           .select({
             id: seasonTeams.id,
             name: seasonTeams.name,
@@ -165,5 +208,5 @@ export async function listAudit(
       }),
     });
   });
-  return { events, nextBefore: rows.length > limit ? (page.at(-1)?.id ?? null) : null };
+  return events;
 }

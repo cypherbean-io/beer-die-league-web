@@ -105,11 +105,26 @@ export const MyMembership = z.strictObject({
   displayName: z.string(),
   role: MembershipRole,
   status: MembershipStatus,
+  // Whether the league emails this member about new games and corrections.
+  emailNotifications: z.boolean(),
 });
 export type MyMembership = z.infer<typeof MyMembership>;
 
 export const MeResponse = z.strictObject({ user: User, memberships: z.array(MyMembership) });
 export type MeResponse = z.infer<typeof MeResponse>;
+
+// The caller's own settings. Both live on memberships, so a change applies in every league the
+// caller belongs to (v1 has one), or, if the name is taken in any of them, in none.
+export const UpdateMeBody = z
+  .strictObject({
+    displayName: DisplayName.optional(),
+    emailNotifications: z.boolean().optional(),
+  })
+  .refine(
+    (body) => body.displayName !== undefined || body.emailNotifications !== undefined,
+    'Change at least one setting',
+  );
+export type UpdateMeBody = z.input<typeof UpdateMeBody>;
 
 // Deleting the account anonymizes the caller in every league as "Deleted player #N", unless
 // they keep their display name on the games they played.
@@ -707,6 +722,42 @@ export type Game = z.infer<typeof Game>;
 export const GameResponse = z.strictObject({ game: Game });
 export type GameResponse = z.infer<typeof GameResponse>;
 
+export const GAMES_PAGE_MAX = 50;
+
+// The league's games, newest first, paging backwards with a `before` cursor. With
+// `awaiting=override`, only games whose open revision waits on a commissioner's review: the
+// override queue.
+export const GamesQuery = z.strictObject({
+  before: z.uuid().optional(),
+  limit: z
+    .string()
+    .regex(/^[0-9]{1,3}$/, 'Expected a whole number')
+    .transform(Number)
+    .pipe(z.int().min(1).max(GAMES_PAGE_MAX))
+    .optional(),
+  awaiting: z.literal('override').optional(),
+});
+export type GamesQuery = z.input<typeof GamesQuery>;
+
+export const GamesResponse = z.strictObject({
+  games: z.array(Game).max(GAMES_PAGE_MAX),
+  nextBefore: z.uuid().nullable(),
+});
+export type GamesResponse = z.infer<typeof GamesResponse>;
+
+// A revision in a game's history, with when it was made.
+export const GameHistoryRevision = GameRevision.extend({ createdAt: z.iso.datetime() });
+export type GameHistoryRevision = z.infer<typeof GameHistoryRevision>;
+
+export const GameDetailResponse = z.strictObject({
+  game: Game,
+  // Every revision of the game, oldest first.
+  revisions: z.array(GameHistoryRevision),
+  // The log's entries about the game, oldest first: forced confirmations and review decisions.
+  audit: z.array(AuditEvent),
+});
+export type GameDetailResponse = z.infer<typeof GameDetailResponse>;
+
 // The inbox lists at most this many games. Normal play never comes close; the cap keeps a
 // flood of submissions from making a player's inbox unloadable.
 export const INBOX_MAX = 50;
@@ -715,10 +766,22 @@ export const INBOX_MAX = 50;
 export const InboxResponse = z.strictObject({ games: z.array(Game).max(INBOX_MAX) });
 export type InboxResponse = z.infer<typeof InboxResponse>;
 
-// Which counted games a stat covers (SPEC §3.7): `alltime` is every season game, and
-// `combined` is every game. Season scopes (`season:<id>`) arrive with seasons (slice 5).
-export const StatsScope = z.enum(['alltime', 'exhibition', 'combined']);
+// Which counted games a stat covers (SPEC §3.7): `season:<id>` is that season's games, subs
+// included; `alltime` is every season game; `combined` is every game.
+export const StatsScope = z.union([
+  z.enum(['alltime', 'exhibition', 'combined']),
+  z.templateLiteral(['season:', z.uuid()]),
+]);
 export type StatsScope = z.infer<typeof StatsScope>;
+
+export function seasonScope(seasonId: string): StatsScope {
+  return `season:${seasonId}`;
+}
+
+// The season a scope covers, or null for a scope that isn't a single season's.
+export function scopeSeasonId(scope: StatsScope): string | null {
+  return scope.startsWith('season:') ? scope.slice('season:'.length) : null;
+}
 
 export const PlayerStatsQuery = z.strictObject({ scope: StatsScope });
 export type PlayerStatsQuery = z.input<typeof PlayerStatsQuery>;
