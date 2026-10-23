@@ -37,6 +37,7 @@ export function leagueInviteRoutes(deps: AppDeps) {
       return c.json({ invites } satisfies InvitesResponse);
     })
     .delete('/invites/:iid', async (c) => {
+      await readJson(c, EmptyBody);
       await revokeInvite(deps.db, c.get('membership')!, idParam(c, 'iid'), deps.clock.now());
       return c.body(null, 204);
     });

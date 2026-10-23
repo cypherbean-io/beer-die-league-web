@@ -1,13 +1,15 @@
 #!/bin/sh
-# Dumps the league database and keeps 14 days of dumps. They hold PII, so deleted data
-# lingers in them for no longer than that (SPEC §4). Runs in the `backup` image, which has
+# Dumps the league database and keeps no dump past 14 days old. They hold PII, so deleted
+# data lingers in them for no longer than that (SPEC §4). Runs in the `backup` image, which has
 # pg_dump; the PG* variables in compose.yaml say where to connect.
 #   backup.sh once      take one dump now
 #   backup.sh nightly   take one at 03:00 UTC every day (the compose service's default)
 set -eu
 
 BACKUP_DIR=/backups
-RETENTION_MINUTES=$((14 * 24 * 60))
+# Runs are a day apart, so each prunes what would pass 14 days before the next one: anything
+# over 13 days old.
+PRUNE_AFTER_MINUTES=$(((14 - 1) * 24 * 60))
 RUN_AT=03:00:00
 
 log() {
@@ -19,7 +21,7 @@ once() {
   # First, so the 14 days hold even through a run of failed dumps (the privacy note promises
   # them). Partial dumps count too: a run killed mid-dump (a container stop) leaves one.
   find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'beerdie-*.dump' -o -name '.beerdie-*.dump.partial' \) \
-    -mmin +"$RETENTION_MINUTES" -delete
+    -mmin +"$PRUNE_AFTER_MINUTES" -delete
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   partial="$BACKUP_DIR/.beerdie-$stamp.dump.partial"
   trap 'rm -f "$partial"' EXIT

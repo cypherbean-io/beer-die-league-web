@@ -64,17 +64,18 @@ async function failure(res: Response): Promise<ApiRequestError> {
     : new ApiRequestError(res.status, 'UNKNOWN', `Request failed with ${res.status}`);
 }
 
-// Writes are always JSON: the API refuses anything else as a CSRF defence, even a bodiless
-// DELETE.
+// Writes are always JSON: the API refuses anything else as a CSRF defence, and parses every
+// write's body with a strict schema, so even a DELETE sends one (`{}` when it has nothing to
+// say).
 function sendJson(
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
-  body?: unknown,
+  body: unknown,
 ): Promise<Response> {
   return fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: JSON.stringify(body),
   });
 }
 
@@ -323,7 +324,7 @@ export async function listInvites(leagueId: string): Promise<Invite[]> {
 
 export async function revokeInvite(leagueId: string, inviteId: string): Promise<void> {
   const path = `${leaguePath(leagueId)}/invites/${encodeURIComponent(inviteId)}`;
-  await expectOk(await sendJson('DELETE', path));
+  await expectOk(await sendJson('DELETE', path, {}));
 }
 
 // Newest first.

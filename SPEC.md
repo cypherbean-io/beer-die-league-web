@@ -247,7 +247,8 @@ submit ──► PENDING ──(4 confirmations [+ override if violations])─�
 - The caller must be one of that revision's players.
 - If the revision isn't open, the server returns `409`. This also covers revisions that
   have since expired.
-- Confirming twice is idempotent.
+- Confirming twice is idempotent while the revision is open or once it has confirmed. Once
+  it has expired or been replaced, a repeat gets `409` like any other confirmation.
 - The client always sends the revision id it actually displayed, so nobody can confirm
   numbers they haven't seen.
 
@@ -274,6 +275,8 @@ submit ──► PENDING ──(4 confirmations [+ override if violations])─�
 
 - Commissioners only.
 - Applies only to listed players who have no confirmation on that open revision.
+- A commissioner can't list themselves (`422 SELF`). A playing commissioner confirms their
+  own result as a player.
 - Writes one audit event per player. `actor_was_participant` is set when the
   commissioner played in the game, and that flag is shown on the game page.
 - A player who disagrees can still propose a correction, which resets everything.
@@ -302,7 +305,8 @@ revision they appear in is voided in the same transaction:
 
 - All transitions hold the game row lock.
 - When concurrent final confirmations race, exactly one of them performs the
-  transition, writes the audit entry, and enqueues the email.
+  transition, so the game counts once. A confirmation writes no audit entry and sends no
+  email: the audit log records commissioner actions, and email announces new revisions only.
 
 ### 3.6 Validation (`packages/core/src/rules.ts`)
 
@@ -372,7 +376,8 @@ not in the future, and the season constraints in 3.7.
 - `playedAt ≥ started_at`.
 - Each side holds the team's current roster, with at most **one** sub per side.
 - The server derives `is_sub`: a player not on the side's roster is a sub. A sub may be
-  any approved member, including someone on a third team.
+  any approved member, including someone on a third team, but not a player on the opposing
+  side's team (`OPPOSING_PLAYER`).
 - The team gets the win or loss. The sub's points and sinks count toward the sub's own
   stats in that season.
 
@@ -397,8 +402,9 @@ not in the future, and the season constraints in 3.7.
 - `standings_config = { order: Metric[], minGames: number }`, where `Metric` is one of
   `win_pct | wins | point_diff | points_for | sinks | head_to_head`.
 - Default: `['win_pct', 'head_to_head', 'point_diff', 'sinks']` with `minGames: 0`.
-- `head_to_head` compares win% only within the group of teams still tied at that step;
-  if those teams have no games against each other, it's a no-op.
+- `head_to_head` compares win% only in the games among the teams still tied at that step.
+  It applies only when each of them played at least one of the others; otherwise it's a
+  no-op, which covers teams that never played each other.
 - Teams still tied after the whole order share a rank, shown as "T-2" and ordered by
   name.
 - Teams with `GP = 0` or `GP < minGames` are listed but unranked.
@@ -576,7 +582,9 @@ There is no date of birth, no location, and no payment data.
 - Commissioners see emails only for members pending approval.
 - **Account deletion** erases the email, sessions, codes, and outbox rows, and voids the
   member's open revisions. The display name becomes "Deleted player #N" unless the
-  member chose to keep it. A kept name stays reserved and is marked as a former member.
+  member chose to keep it. A kept name stays reserved. Members who left, were removed, or
+  deleted their account are marked as former members wherever their name appears on games,
+  stats, and rosters.
   Confirmed games remain, so other players' records don't change.
 - Re-registering with the same email creates a new, unlinked identity.
 - **Backups:** nightly `pg_dump` files contain PII and are kept for 14 days, so deleted
@@ -633,7 +641,8 @@ sinks don't end the game):
 
 - Sorts by the configured primary metric.
 - `head_to_head` breaks a two-way tie, uses only games among the tied group in a
-  three-way tie, and is a no-op when the tied teams never played each other.
+  three-way tie, and is a no-op when the tied teams never played each other, or when one of
+  them played none of the others.
 - Teams below `minGames` are unranked, and a team with 0 GP is always unranked.
 - A full tie shares a rank.
 - A custom order (`wins` first) changes the ranking.
@@ -695,8 +704,8 @@ sinks don't end the game):
 - Confirming a superseded revision gets `409`.
 - A non-player gets `403`.
 - Confirming twice is idempotent.
-- Concurrent final confirmations (`Promise.all`) produce exactly one transition, one
-  audit/outbox effect, and stats counted once.
+- Concurrent final confirmations (`Promise.all`) produce exactly one transition and stats
+  counted once.
 
 **Correct**
 

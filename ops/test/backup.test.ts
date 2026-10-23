@@ -46,6 +46,8 @@ function seed(name: string, daysOld: number): Promise<string> {
 describe('ops/backup.sh', () => {
   const run = randomUUID().slice(0, 8);
   const old = `beerdie-test-${run}-old.dump`;
+  // Past 14 days by the next nightly run, a day from now.
+  const aging = `beerdie-test-${run}-aging.dump`;
   const recent = `beerdie-test-${run}-recent.dump`;
   // What a run killed mid-dump leaves behind.
   const oldPartial = `.beerdie-test-${run}-old.dump.partial`;
@@ -56,7 +58,8 @@ describe('ops/backup.sh', () => {
 
   beforeAll(async () => {
     await seed(old, 15);
-    await seed(recent, 13);
+    await seed(aging, 13.5);
+    await seed(recent, 12);
     await seed(oldPartial, 15);
     before = await dumps();
     await runBackup();
@@ -66,7 +69,9 @@ describe('ops/backup.sh', () => {
   });
 
   afterAll(async () => {
-    const names = [old, recent, oldPartial, ...created].map((n) => `"/backups/${n}"`).join(' ');
+    const names = [old, aging, recent, oldPartial, ...created]
+      .map((n) => `"/backups/${n}"`)
+      .join(' ');
     await inBackup(`rm -f ${names}`);
   });
 
@@ -90,7 +95,13 @@ describe('ops/backup.sh', () => {
     expect(after.has(old)).toBe(false);
   });
 
-  it('keeps dumps from the last 14 days', () => {
+  // Runs are a day apart, so a dump left for the next run would outlive the 14 days.
+  it('deletes a dump over 13 days old, which would be past 14 days by the next run', () => {
+    expect(before.has(aging)).toBe(true);
+    expect(after.has(aging)).toBe(false);
+  });
+
+  it('keeps dumps under 13 days old', () => {
     expect(after.has(recent)).toBe(true);
   });
 

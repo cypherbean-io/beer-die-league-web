@@ -11,6 +11,7 @@ import { Fragment, useState } from 'react';
 import { ScrollView, StyleSheet, Text, type TextStyle, View } from 'react-native';
 import { getPartnershipStats, getPlayerStats } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
+import { playerName } from '../src/gameText';
 import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../src/stats';
 
 // `id` names a cell's testID within its row.
@@ -98,7 +99,7 @@ function StatsTable({ membership }: { membership: MyMembership }) {
                   href={{ pathname: '/players/[mid]', params: { mid: p.membershipId } }}
                   style={[styles.name, styles.link]}
                 >
-                  {p.displayName}
+                  {playerName(p)}
                   {p.membershipId === membership.id ? ' (you)' : ''}
                 </Link>
                 <Cells row={p} columns={COLUMNS} />
@@ -126,7 +127,7 @@ function StatsTable({ membership }: { membership: MyMembership }) {
                             href={{ pathname: '/players/[mid]', params: { mid: x.membershipId } }}
                             style={styles.link}
                           >
-                            {x.displayName}
+                            {playerName(x)}
                             {x.membershipId === membership.id ? ' (you)' : ''}
                           </Link>
                         </Fragment>

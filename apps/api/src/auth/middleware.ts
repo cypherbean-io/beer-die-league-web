@@ -6,8 +6,11 @@ import { type Actor, resolveMembership } from '../domain/membership.ts';
 import { ApiError, idParam } from '../http.ts';
 import { resolveSession, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
 
-export type AuthEnv = { Variables: { auth?: SessionAuth } };
-export type LeagueEnv = { Variables: { auth?: SessionAuth; membership?: Actor } };
+// `requestId` is set by the access log before anything else runs.
+export type AuthEnv = { Variables: { requestId?: string; auth?: SessionAuth } };
+export type LeagueEnv = {
+  Variables: { requestId?: string; auth?: SessionAuth; membership?: Actor };
+};
 
 export const SESSION_COOKIE = 'session';
 

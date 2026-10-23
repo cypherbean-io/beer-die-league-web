@@ -186,8 +186,8 @@ async function partnerships(t: League, as: Caller, scope: string): Promise<Partn
 // A partnership's two players as the API lists them: in pairKey order.
 function pair(a: Player, aName: string, b: Player, bName: string) {
   const players = [
-    { membershipId: a.membershipId, displayName: aName },
-    { membershipId: b.membershipId, displayName: bName },
+    { membershipId: a.membershipId, displayName: aName, former: false },
+    { membershipId: b.membershipId, displayName: bName, former: false },
   ];
   return pairKey(a.membershipId, b.membershipId).startsWith(a.membershipId)
     ? players
@@ -207,9 +207,10 @@ async function errorOf(res: Response) {
   return ErrorBody.parse(await res.json()).error;
 }
 
-const noGames = (p: Player, displayName: string): PlayerStats => ({
+const noGames = (p: Player, displayName: string, former = false): PlayerStats => ({
   membershipId: p.membershipId,
   displayName,
+  former,
   gamesPlayed: 0,
   wins: 0,
   losses: 0,
@@ -252,6 +253,7 @@ describe('player stats', () => {
       {
         membershipId: t.ana.membershipId,
         displayName: 'Ana',
+        former: false,
         gamesPlayed: 1,
         wins: 1,
         losses: 0,
@@ -264,6 +266,7 @@ describe('player stats', () => {
       {
         membershipId: t.bo.membershipId,
         displayName: 'Bo',
+        former: false,
         gamesPlayed: 1,
         wins: 1,
         losses: 0,
@@ -276,6 +279,7 @@ describe('player stats', () => {
       {
         membershipId: t.cy.membershipId,
         displayName: 'Cy',
+        former: false,
         gamesPlayed: 1,
         wins: 0,
         losses: 1,
@@ -288,6 +292,7 @@ describe('player stats', () => {
       {
         membershipId: t.di.membershipId,
         displayName: 'Di',
+        former: false,
         gamesPlayed: 1,
         wins: 0,
         losses: 1,
@@ -327,6 +332,7 @@ describe('player stats', () => {
     expect(await profile(t, t.cy.caller, t.ana, 'combined')).toEqual({
       membershipId: t.ana.membershipId,
       displayName: 'Ana',
+      former: false,
       gamesPlayed: 3,
       wins: 2,
       losses: 1,
@@ -629,7 +635,7 @@ describe("a player's profile", () => {
     await setStatus(t.cy, 'left');
 
     expect(await profile(t, t.bo.caller, t.cy, 'combined')).toMatchObject({ gamesPlayed: 1 });
-    expect(await profile(t, t.bo.caller, t.cy, 'alltime')).toEqual(noGames(t.cy, 'Cy'));
+    expect(await profile(t, t.bo.caller, t.cy, 'alltime')).toEqual(noGames(t.cy, 'Cy', true));
   });
 
   it('gives 404 for a member of another league', async () => {
@@ -922,5 +928,23 @@ describe('partnership stats', () => {
 
     expect(res.status).toBe(422);
     expect((await errorOf(res)).code).toBe('VALIDATION');
+  });
+});
+
+describe('the counted results view', () => {
+  it("gives each player's row the points of the side they played against", async () => {
+    const t = await table();
+    await counted(t, game(t));
+
+    const rows = await api.db.execute<{ membership_id: string; opponent_points: number }>(
+      sql`select membership_id, opponent_points from counted_results`,
+    );
+
+    expect(Object.fromEntries(rows.map((r) => [r.membership_id, r.opponent_points]))).toEqual({
+      [t.ana.membershipId]: 9,
+      [t.bo.membershipId]: 9,
+      [t.cy.membershipId]: 11,
+      [t.di.membershipId]: 11,
+    });
   });
 });

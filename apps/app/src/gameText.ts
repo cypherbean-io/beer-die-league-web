@@ -1,4 +1,4 @@
-import type { GameRevision } from '@beer-die/core';
+import type { Game, GameRevision } from '@beer-die/core';
 
 type Side = 'A' | 'B';
 
@@ -86,4 +86,33 @@ export function timeLeft(expiresAt: string, now: Date): string {
         ? [count(hours, 'hour'), minutes > 0 ? count(minutes, 'minute') : '']
         : [count(minutes, 'minute')];
   return `${parts.filter(Boolean).join(' ')} left`;
+}
+
+// What to tell a player who has just confirmed revision `revisionId`, from the game the server
+// sent back: whether it counts now, and if not, what does meanwhile.
+export function confirmNotice(game: Game, revisionId: string): string {
+  if (game.confirmedRevision?.id === revisionId) {
+    return 'Confirmed. All four players have confirmed, so the game now counts.';
+  }
+  if (game.confirmedRevision !== null) {
+    return 'Confirmed. The counted result keeps counting until all four players confirm the correction.';
+  }
+  return 'Confirmed. The game counts once all four players confirm it.';
+}
+
+// Whether the game form offers sending a complete result for a commissioner's review: when it
+// breaks the rules as the app knows them, or when the server, whose rules may have changed
+// since, refused it for breaking them (`errorCode` is the last attempt's).
+export function offersReview(
+  complete: boolean,
+  violationCount: number,
+  errorCode: string | undefined,
+): boolean {
+  return complete && (violationCount > 0 || errorCode === 'RULES_VIOLATION');
+}
+
+// A member's name as a game, stat line, or roster shows it, marked once they have left the
+// league.
+export function playerName(player: { displayName: string; former: boolean }): string {
+  return player.former ? `${player.displayName} (former member)` : player.displayName;
 }

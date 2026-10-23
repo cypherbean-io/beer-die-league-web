@@ -1,6 +1,13 @@
-import type { GamePlayer, GameRevision } from '@beer-die/core';
+import type { Game, GamePlayer, GameRevision } from '@beer-die/core';
 import { describe, expect, it } from 'vitest';
-import { describeChange, diffRevisions, timeLeft } from './gameText';
+import {
+  confirmNotice,
+  describeChange,
+  diffRevisions,
+  offersReview,
+  playerName,
+  timeLeft,
+} from './gameText';
 
 const ANA = '0199f3a2-5c1e-7a00-8000-00000000000a';
 const BO = '0199f3a2-5c1e-7a00-8000-00000000000b';
@@ -17,6 +24,7 @@ const player = (
 ): GamePlayer => ({
   membershipId,
   displayName,
+  former: false,
   side,
   points,
   sinks,
@@ -137,5 +145,75 @@ describe('timeLeft', () => {
     [-HOUR, 'Closed'],
   ])('shows %i ms as %j', (ms, text) => {
     expect(timeLeft(later(ms), now)).toBe(text);
+  });
+});
+
+// An exhibition game with the given revisions, pending unless one has confirmed.
+function game(open: GameRevision | null, confirmed: GameRevision | null): Game {
+  return {
+    id: '0199f3a2-5c1e-7a00-8000-0000000000f1',
+    kind: 'exhibition',
+    seasonId: null,
+    status: confirmed ? 'confirmed' : 'pending',
+    rulesSnapshot: { targetScore: 11, winBy: 2, sinkPoints: 0, sinkEndsGame: false },
+    windowExpiresAt: open ? '2026-10-25T12:00:00.000Z' : null,
+    openRevision: open,
+    confirmedRevision: confirmed,
+  };
+}
+
+describe('confirmNotice', () => {
+  const first = revision({ status: 'open' });
+  const correction = revision({ id: '0199f3a2-5c1e-7a00-8000-0000000000a2', number: 2 });
+
+  it('says the game now counts once the revision confirmed is the one counting', () => {
+    const counted = game(null, { ...first, status: 'confirmed' });
+
+    expect(confirmNotice(counted, first.id)).toBe(
+      'Confirmed. All four players have confirmed, so the game now counts.',
+    );
+  });
+
+  it('says the game counts once all four confirm while the others have yet to', () => {
+    expect(confirmNotice(game(first, null), first.id)).toBe(
+      'Confirmed. The game counts once all four players confirm it.',
+    );
+  });
+
+  it('says the counted result stands until all four confirm a correction of a confirmed game', () => {
+    const reopened = game({ ...correction, status: 'open' }, { ...first, status: 'confirmed' });
+
+    expect(confirmNotice(reopened, correction.id)).toBe(
+      'Confirmed. The counted result keeps counting until all four players confirm the correction.',
+    );
+  });
+});
+
+describe('offersReview', () => {
+  it('offers a review of a complete result that breaks the rules the app knows', () => {
+    expect(offersReview(true, 1, undefined)).toBe(true);
+  });
+
+  it('offers a review of a complete result the server refused for breaking its rules', () => {
+    expect(offersReview(true, 0, 'RULES_VIOLATION')).toBe(true);
+  });
+
+  it('offers no review of a result that breaks no rules', () => {
+    expect(offersReview(true, 0, undefined)).toBe(false);
+    expect(offersReview(true, 0, 'STALE_REVISION')).toBe(false);
+  });
+
+  it('offers no review of an incomplete result', () => {
+    expect(offersReview(false, 1, 'RULES_VIOLATION')).toBe(false);
+  });
+});
+
+describe('playerName', () => {
+  it('marks a former member', () => {
+    expect(playerName({ displayName: 'Bo', former: true })).toBe('Bo (former member)');
+  });
+
+  it("leaves a member's name as it is", () => {
+    expect(playerName({ displayName: 'Bo', former: false })).toBe('Bo');
   });
 });

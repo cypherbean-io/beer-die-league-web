@@ -12,7 +12,7 @@ import { and, asc, desc, eq, exists, or, type SQL, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Db } from '../db/client.ts';
 import { countedResults, memberships, seasons, seasonTeams } from '../db/schema.ts';
-import type { Actor } from '../domain/membership.ts';
+import { type Actor, formerMember } from '../domain/membership.ts';
 import { toSeason } from '../domain/seasons.ts';
 import { ApiError } from '../http.ts';
 
@@ -49,9 +49,13 @@ const totals = {
   sinks: sql<number>`coalesce(sum(${countedResults.sinks}), 0)::int`,
 };
 
-const player = { membershipId: memberships.id, displayName: memberships.displayName };
+const player = {
+  membershipId: memberships.id,
+  displayName: memberships.displayName,
+  former: formerMember(memberships.status),
+};
 
-type Totals = { membershipId: string; displayName: string } & {
+type Totals = { membershipId: string; displayName: string; former: boolean } & {
   [K in keyof typeof totals]: number;
 };
 
@@ -61,6 +65,7 @@ function withRates(row: Totals): PlayerStats {
   return {
     membershipId: row.membershipId,
     displayName: row.displayName,
+    former: row.former,
     gamesPlayed,
     wins,
     losses: gamesPlayed - wins,
@@ -168,8 +173,16 @@ export async function listPartnershipStats(
   await checkScope(db, actor, scope);
   const rows = await db
     .select({
-      first: { membershipId: first.id, displayName: first.displayName },
-      second: { membershipId: second.id, displayName: second.displayName },
+      first: {
+        membershipId: first.id,
+        displayName: first.displayName,
+        former: formerMember(first.status),
+      },
+      second: {
+        membershipId: second.id,
+        displayName: second.displayName,
+        former: formerMember(second.status),
+      },
       ...pairTotals,
     })
     .from(countedResults)

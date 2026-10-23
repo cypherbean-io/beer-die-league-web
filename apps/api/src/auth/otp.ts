@@ -66,12 +66,14 @@ export async function requestCode(
     attempts: 0,
     consumedAt: null,
   };
+  // The code row, then the user row: verifyCode takes them in that order, so the two can't
+  // deadlock on one email.
   await db.transaction(async (tx) => {
-    const userId = await findOrCreateUser(tx, input.email, now);
     await tx
       .insert(authCodes)
       .values({ email: input.email, ...fields })
       .onConflictDoUpdate({ target: authCodes.email, set: fields });
+    const userId = await findOrCreateUser(tx, input.email, now);
     await enqueueEmail(tx, {
       userId,
       template: SIGN_IN_CODE,

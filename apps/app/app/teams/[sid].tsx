@@ -20,6 +20,7 @@ import {
   type TeamAction,
 } from '../../src/api/client';
 import { currentMembership, useMe } from '../../src/api/hooks';
+import { playerName } from '../../src/gameText';
 import { Button } from '../../src/ui';
 
 function messageFor(error: unknown): string {
@@ -60,7 +61,7 @@ const STATUS_LABELS: Record<Team['status'], string> = {
 const live = (team: Team) =>
   team.status === 'proposed' || team.status === 'accepted' || team.status === 'approved';
 
-const names = (team: Team) => team.players.map((p) => p.displayName).join(' and ');
+const names = (team: Team) => team.players.map(playerName).join(' and ');
 
 export default function Teams() {
   const { sid } = useLocalSearchParams<{ sid: string }>();

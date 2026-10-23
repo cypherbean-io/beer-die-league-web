@@ -6,12 +6,14 @@ import {
   ErrorBody,
   type ExhibitionGameBody,
   type Game,
+  GameDetailResponse,
   GameResponse,
   InboxResponse,
   JoinResponse,
   MemberResponse,
   MembersResponse,
   MeResponse,
+  PartnershipStatsResponse,
   PlayerStatsResponse,
   type Season,
   type SeasonGameBody,
@@ -384,6 +386,26 @@ async function playerStats(l: League, as: Player) {
   return PlayerStatsResponse.parse(await res.json()).players;
 }
 
+async function partnerships(l: League, as: Player) {
+  const res = await call('GET', `/api/leagues/${l.leagueId}/stats/partnerships?scope=combined`, {
+    as: as.caller,
+  });
+  expect(res.status).toBe(200);
+  return PartnershipStatsResponse.parse(await res.json()).partnerships;
+}
+
+async function gameDetail(l: League, gameId: string) {
+  const res = await call('GET', `/api/leagues/${l.leagueId}/games/${gameId}`, {
+    as: l.commissioner,
+  });
+  expect(res.status).toBe(200);
+  return GameDetailResponse.parse(await res.json());
+}
+
+// Each listed player's name with whether they are marked as a former member.
+const marks = (players: Array<{ displayName: string; former: boolean }>) =>
+  players.map((p) => [p.displayName, p.former]);
+
 async function auditLog(l: League, as: Caller = l.commissioner) {
   const res = await call('GET', `/api/leagues/${l.leagueId}/audit`, { as });
   expect(res.status).toBe(200);
@@ -423,6 +445,54 @@ describe('removing a member', () => {
     expect((await gameRow(g.id)).status).toBe('confirmed');
     const bo = (await playerStats(s, s.cy)).find((p) => p.membershipId === s.bo.membershipId);
     expect(bo).toMatchObject({ displayName: 'Bo', gamesPlayed: 1, wins: 1, points: 5 });
+  });
+
+  it('marks them as a former member on the games they played', async () => {
+    const s = await setup();
+    const g = await counted(s, exhibition(s));
+
+    await removed(s, s.bo.membershipId);
+
+    const { game } = await gameDetail(s, g.id);
+    expect(marks(game.confirmedRevision!.players)).toEqual([
+      ['Ana', false],
+      ['Bo', true],
+      ['Cy', false],
+      ['Di', false],
+    ]);
+  });
+
+  it('marks them as a former member in player stats', async () => {
+    const s = await setup();
+    await counted(s, exhibition(s));
+
+    await removed(s, s.bo.membershipId);
+
+    expect(marks(await playerStats(s, s.cy))).toEqual([
+      ['Ana', false],
+      ['Bo', true],
+      ['Cy', false],
+      ['Di', false],
+    ]);
+  });
+
+  it('marks them as a former member in partnership stats', async () => {
+    const s = await setup();
+    await counted(s, exhibition(s));
+
+    await removed(s, s.bo.membershipId);
+
+    const pairs = await partnerships(s, s.cy);
+    expect(pairs.map((p) => marks(p.players).sort())).toEqual([
+      [
+        ['Ana', false],
+        ['Bo', true],
+      ],
+      [
+        ['Cy', false],
+        ['Di', false],
+      ],
+    ]);
   });
 
   it('voids a correction open on a confirmed game, which keeps counting as confirmed', async () => {
@@ -531,6 +601,32 @@ describe('removing a member', () => {
     await removed(s, s.bo.membershipId);
 
     expect(await openRoster(s.sharks.id)).toEqual([s.ana.membershipId, s.bo.membershipId]);
+  });
+
+  it('marks them as a former member on the finalized roster they finished on', async () => {
+    const s = await setup();
+    expect((await ended(s, s.season.id)).status).toBe('finalized');
+
+    await removed(s, s.bo.membershipId);
+
+    const sharks = (await teams(s, s.season.id)).find((t) => t.id === s.sharks.id);
+    expect(marks(sharks!.players)).toEqual([
+      ['Ana', false],
+      ['Bo', true],
+    ]);
+  });
+
+  it('marks them as a former member on a team they were withdrawn from', async () => {
+    const s = await setup();
+    const owls = await proposed(s, s.ed, s.flo, s.season.id, 'Owls');
+
+    await removed(s, s.flo.membershipId);
+
+    const listed = (await teams(s, s.season.id)).find((t) => t.id === owls.id);
+    expect(marks(listed!.players)).toEqual([
+      ['Ed', false],
+      ['Flo', true],
+    ]);
   });
 
   it('shuts them out of the league, and out of new games', async () => {
