@@ -1,4 +1,9 @@
-import { RequestCodeBody, VerifyCodeBody, type VerifyCodeResponse } from '@beer-die/core';
+import {
+  EmptyBody,
+  RequestCodeBody,
+  VerifyCodeBody,
+  type VerifyCodeResponse,
+} from '@beer-die/core';
 import { isIP } from 'node:net';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { type Context, Hono } from 'hono';
@@ -44,6 +49,7 @@ export function authRoutes(deps: AppDeps) {
       return c.json({ user } satisfies VerifyCodeResponse);
     })
     .post('/auth/logout', requireSession(deps), async (c) => {
+      await readJson(c, EmptyBody);
       const auth = c.get('auth')!;
       await revokeSession(deps.db, auth.sessionId);
       if (auth.client === 'web') clearSessionCookie(c);

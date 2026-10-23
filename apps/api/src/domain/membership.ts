@@ -7,7 +7,7 @@ import {
   nameKey,
 } from '@beer-die/core';
 import { randomBytes } from 'node:crypto';
-import { and, asc, count, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, type AnyColumn, asc, count, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import { TOKEN_PATTERN } from '../auth/sessions.ts';
 import type { Clock } from '../clock.ts';
@@ -32,6 +32,12 @@ export type Actor = { id: string; leagueId: string; userId: string; role: Member
 type Deps = { db: Db; clock: Clock; config: { appOrigin: string; authSecret: string } };
 
 const notFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
+
+// Whether the member a `memberships.status` column (or an alias's) belongs to has left, been
+// removed, or deleted their account: the `former` flag next to their name on games, stats,
+// and rosters (SPEC §4).
+export const formerMember = (status: AnyColumn) =>
+  sql<boolean>`${status} in ('removed', 'left', 'deleted')`;
 
 export function assertCommissioner(actor: Actor): void {
   if (actor.role !== 'commissioner') {

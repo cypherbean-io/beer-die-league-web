@@ -453,6 +453,16 @@ describe('deleting an account', () => {
     expect(res.status).toBe(201);
   });
 
+  it('with keepDisplayName, marks the kept name as a former member', async () => {
+    const s = await setup();
+    await counted(s);
+
+    await deleted(s.bo, true);
+
+    const bo = (await playerStats(s, s.cy)).find((p) => p.membershipId === s.bo.membershipId);
+    expect(bo).toMatchObject({ displayName: 'Bo', former: true });
+  });
+
   it('with keepDisplayName, keeps the name on their games and keeps it reserved', async () => {
     const s = await setup();
     await counted(s);

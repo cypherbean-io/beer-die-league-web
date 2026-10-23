@@ -61,7 +61,7 @@ import {
 } from '../mail/templates.ts';
 import { listGameAudit, recordAudit } from './audit.ts';
 import { expireLapsed } from './expiry.ts';
-import { type Actor, assertCommissioner } from './membership.ts';
+import { type Actor, assertCommissioner, formerMember } from './membership.ts';
 import { settleSeason } from './seasons.ts';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -615,17 +615,24 @@ async function mailCommissioners(
 
 // Records the first submission of a game: revision 1, open, with the submitter's
 // confirmation. `leagueId` always comes from the actor's membership. A season game must also
-// meet its season's constraints (checkSeasonSides), checked once its row is inserted.
+// meet its season's constraints (checkSeasonSides), checked once its row is inserted. A retry
+// is answered before the write limit is counted, so a submitter whose first attempt went
+// through always gets their game back (SPEC §3.8).
 export async function submitGame(
   deps: WriteDeps,
   actor: Actor,
   body: SubmitGameBody,
 ): Promise<{ game: Game; created: boolean }> {
   const now = deps.clock.now();
-  await limitGameWrites(deps, actor, now);
   const payloadSha256 = payloadHash(body);
+  const retried = await deps.db.transaction((tx) =>
+    findReplay(tx, actor, body, payloadSha256, now),
+  );
+  if (retried) return { game: retried, created: false };
+  await limitGameWrites(deps, actor, now);
 
   return deps.db.transaction(async (tx) => {
+    // A concurrent submission of the same key may have committed since the check above.
     const replay = await findReplay(tx, actor, body, payloadSha256, now);
     if (replay) return { game: replay, created: false };
 
@@ -695,7 +702,7 @@ export async function correctGame(
     await holdPlayers(tx, actor, baseId);
     const game = await lockGame(tx, actor, gameId, now);
     const [base] = await tx
-      .select({ status: gameRevisions.status })
+      .select({ status: gameRevisions.status, number: gameRevisions.number })
       .from(gameRevisions)
       .where(and(eq(gameRevisions.id, baseId), eq(gameRevisions.gameId, game.id)));
     if (!base) throw staleRevision('corrected');
@@ -708,11 +715,19 @@ export async function correctGame(
     if (!roster.has(actor.id)) {
       throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can correct it');
     }
-    // A rejected revision stays the open one until a correction supersedes it, so one that
-    // no longer is had its window close.
+    const [latest] = await tx
+      .select({ number: max(gameRevisions.number) })
+      .from(gameRevisions)
+      .where(eq(gameRevisions.gameId, game.id));
+    if (!latest?.number) throw new Error('game has no revisions');
+    // A rejected revision stays the open one until its window closes or a correction
+    // replaces it (keeping its status), so one that no longer is and has nothing after it had
+    // its window close.
     if (
       base.status === 'expired' ||
-      (base.status === 'rejected' && game.openRevisionId !== baseId)
+      (base.status === 'rejected' &&
+        game.openRevisionId !== baseId &&
+        latest.number === base.number)
     ) {
       throw windowClosed('correct');
     }
@@ -725,15 +740,10 @@ export async function correctGame(
     const sides =
       game.kind === 'season' ? await carrySeasonSides(tx, game, baseId, body, result) : null;
     refuseUnreviewed(body, result);
-    const [latest] = await tx
-      .select({ number: max(gameRevisions.number) })
-      .from(gameRevisions)
-      .where(eq(gameRevisions.gameId, game.id));
-    if (!latest?.number) throw new Error('game has no revisions');
 
     // A confirmed base keeps counting; settleRevision supersedes it once its correction
-    // confirms.
-    if (!reopening) {
+    // confirms. A rejected base keeps its rejection in the history.
+    if (base.status === 'open') {
       await tx
         .update(gameRevisions)
         .set({ status: 'superseded' })
@@ -1005,9 +1015,10 @@ async function settleRevision(tx: Tx, game: GameRow, now: Date): Promise<void> {
   if (game.seasonId) await settleSeason(tx, game.seasonId, now);
 }
 
-// A player confirms the revision they were shown. If they have already confirmed it (or
-// submitted it), the game comes back unchanged, whatever has happened to it since.
-// Otherwise the revision must still be the game's open one.
+// A player confirms the revision they were shown, which must still be the game's open one. If
+// they have already confirmed it (or submitted it), the game comes back unchanged, as it does
+// once that revision has confirmed; once it has expired or been replaced, a repeat is refused
+// like any other confirmation (SPEC §3.5).
 export async function confirmRevision(
   deps: Deps,
   actor: Actor,
@@ -1038,12 +1049,13 @@ export async function confirmRevision(
       )
       .where(and(eq(revisionPlayers.revisionId, rid), eq(revisionPlayers.membershipId, actor.id)));
     if (!seat) throw new ApiError(403, 'FORBIDDEN', 'Only the players in a game can confirm it');
-    if (seat.confirmation !== null) return loadGame(tx, game.id);
-
+    const given = seat.confirmation !== null;
+    if (given && revision.status === 'confirmed') return loadGame(tx, game.id);
     if (revision.status === 'expired') throw windowClosed('confirm');
     if (revision.status !== 'open' || game.openRevisionId !== rid) {
       throw staleRevision('confirmed');
     }
+    if (given) return loadGame(tx, game.id);
 
     await tx.insert(confirmations).values({
       revisionId: rid,
@@ -1060,8 +1072,9 @@ export async function confirmRevision(
 // silent (SPEC §3.5). Each forced confirmation is audited, flagged when the commissioner played
 // in the game, and the revision then confirms like any other once all four have one. A listed
 // player who has already confirmed is skipped, so if none is left the game comes back
-// unchanged, whatever has happened to it since. A player who disagrees can still correct the
-// result, which starts the confirmations over.
+// unchanged, while the revision is open or once it has confirmed, like a player's repeated
+// confirmation. A player who disagrees can still correct the result, which starts the
+// confirmations over.
 export async function forceConfirm(
   deps: Deps,
   actor: Actor,
@@ -1121,11 +1134,12 @@ export async function forceConfirm(
     }
 
     const silent = listed.filter((id) => !hasConfirmed.get(id));
-    if (silent.length === 0) return loadGame(tx, game.id);
+    if (silent.length === 0 && revision.status === 'confirmed') return loadGame(tx, game.id);
     if (revision.status === 'expired') throw windowClosed('confirm');
     if (revision.status !== 'open' || game.openRevisionId !== rid) {
       throw staleRevision('confirmed');
     }
+    if (silent.length === 0) return loadGame(tx, game.id);
 
     await tx.insert(confirmations).values(
       silent.map((membershipId) => ({
@@ -1376,6 +1390,7 @@ async function loadRevisions(tx: Tx, ids: string[]): Promise<Map<string, GameRev
       revisionId: revisionPlayers.revisionId,
       membershipId: revisionPlayers.membershipId,
       displayName: memberships.displayName,
+      former: formerMember(memberships.status),
       side: revisionPlayers.side,
       points: revisionPlayers.points,
       sinks: revisionPlayers.sinks,

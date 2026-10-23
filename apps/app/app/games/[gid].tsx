@@ -27,7 +27,7 @@ import {
   statusLabel,
   useNow,
 } from '../../src/game';
-import { describeChange, diffRevisions, timeLeft } from '../../src/gameText';
+import { confirmNotice, describeChange, diffRevisions, timeLeft } from '../../src/gameText';
 import { Button } from '../../src/ui';
 
 const formatTime = (iso: string) => new Date(iso).toLocaleString();
@@ -251,12 +251,7 @@ function OpenActions({
   const mine = revision.players.find((p) => p.membershipId === membership.id);
   const confirm = useMutation({
     mutationFn: () => confirmRevision(leagueId, game.id, revision.id),
-    onSuccess: (g) =>
-      onDone(
-        g.confirmedRevision?.id === revision.id
-          ? 'Confirmed. All four players have confirmed, so the game now counts.'
-          : 'Confirmed. The game counts once all four players confirm it.',
-      ),
+    onSuccess: (g) => onDone(confirmNotice(g, revision.id)),
     onError: onRefused,
   });
   const awaitingReview = revision.status === 'open' && revision.overrideStatus === 'requested';

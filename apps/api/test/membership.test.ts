@@ -253,6 +253,7 @@ describe('invites', () => {
     const { id, token } = await invite(l);
     const revoke = await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, {
       as: l.commissioner,
+      body: {},
     });
     const bo = await signIn(api.db, clock, 'bo@example.com');
 
@@ -266,20 +267,42 @@ describe('invites', () => {
   it('drops a revoked invite from the active list', async () => {
     const l = await league('Basement League', 'ana@example.com', 'Ana');
     const { id } = await invite(l);
-    await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, { as: l.commissioner });
+    await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, {
+      as: l.commissioner,
+      body: {},
+    });
 
     const res = await call('GET', `/api/leagues/${l.leagueId}/invites`, { as: l.commissioner });
 
     expect(InvitesResponse.parse(await res.json()).invites).toEqual([]);
   });
 
-  it('treats revoking an already revoked invite as a no-op', async () => {
+  it('rejects a revoke whose body has unknown keys with 422 VALIDATION, keeping the invite', async () => {
     const l = await league('Basement League', 'ana@example.com', 'Ana');
     const { id } = await invite(l);
-    await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, { as: l.commissioner });
 
     const res = await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, {
       as: l.commissioner,
+      body: { everyone: true },
+    });
+
+    expect(res.status).toBe(422);
+    expect(await errorCode(res)).toBe('VALIDATION');
+    const listed = await call('GET', `/api/leagues/${l.leagueId}/invites`, { as: l.commissioner });
+    expect(InvitesResponse.parse(await listed.json()).invites.map((i) => i.id)).toEqual([id]);
+  });
+
+  it('treats revoking an already revoked invite as a no-op', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { id } = await invite(l);
+    await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, {
+      as: l.commissioner,
+      body: {},
+    });
+
+    const res = await call('DELETE', `/api/leagues/${l.leagueId}/invites/${id}`, {
+      as: l.commissioner,
+      body: {},
     });
 
     expect(res.status).toBe(204);
@@ -691,7 +714,7 @@ const LEAGUE_ROUTES: Route[] = [
   { method: 'POST', path: '/api/leagues/:leagueId/leave', commissioner: false, body: {} },
   { method: 'POST', path: '/api/leagues/:leagueId/invites', commissioner: true, body: {} },
   { method: 'GET', path: '/api/leagues/:leagueId/invites', commissioner: true },
-  { method: 'DELETE', path: '/api/leagues/:leagueId/invites/:iid', commissioner: true },
+  { method: 'DELETE', path: '/api/leagues/:leagueId/invites/:iid', commissioner: true, body: {} },
   { method: 'GET', path: '/api/leagues/:leagueId/games', commissioner: false },
   { method: 'GET', path: '/api/leagues/:leagueId/games/:gid', commissioner: false },
   {

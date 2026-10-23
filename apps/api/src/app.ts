@@ -25,14 +25,19 @@ const MAX_BODY_BYTES = 16 * 1024;
 export function createApp(deps: AppDeps) {
   const app = new Hono<AuthEnv>().basePath('/api');
 
-  // Access log: the route template, never the raw path (invite tokens appear in paths).
+  // Access log: the route template, never the raw path (invite tokens appear in paths). The
+  // request id goes on every line logged for the request and back to the client in
+  // X-Request-Id, so a report of a failed request leads to its log lines.
   app.use('*', async (c, next) => {
     const started = performance.now();
+    const requestId = randomUUID();
+    c.set('requestId', requestId);
     await next();
+    c.header('X-Request-Id', requestId);
     deps.log({
       level: 'info',
       msg: 'request',
-      requestId: randomUUID(),
+      requestId,
       method: c.req.method,
       route: routePath(c, -1),
       status: c.res.status,
@@ -57,14 +62,16 @@ export function createApp(deps: AppDeps) {
     deps.log({
       level: 'error',
       msg: 'unhandled error',
+      requestId: c.get('requestId'),
       route: routePath(c, -1),
       ...safeErrorFields(err),
     });
     return c.json(errorBody('INTERNAL', 'Internal server error'), 500);
   });
+  app.notFound((c) => c.json(errorBody('NOT_FOUND', 'Not found'), 404));
 
   return app
-    .route('/', healthRoutes(deps.db))
+    .route('/', healthRoutes(deps))
     .route('/', authRoutes(deps))
     .route('/', meRoutes(deps))
     .route('/', inviteRoutes(deps))

@@ -36,6 +36,7 @@ import {
   newDraft,
   submitDraft,
 } from '../src/drafts';
+import { offersReview } from '../src/gameText';
 import { Button } from '../src/ui';
 
 const MAX_LINE_VALUE = 99;
@@ -247,6 +248,13 @@ function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormP
         void queryClient.invalidateQueries({ queryKey });
       }
     },
+    // A new game is checked against the league's current rules, which may have changed since
+    // they were loaded; fetching them again lets the form show what the server found.
+    onError: (error) => {
+      if (!base && error instanceof ApiRequestError && error.code === 'RULES_VIOLATION') {
+        void queryClient.invalidateQueries({ queryKey: ['league', leagueId] });
+      }
+    },
   });
   // Every change to a new game's form is saved on the device as it is made.
   useEffect(() => {
@@ -437,6 +445,7 @@ function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormP
     (submit.error.code === 'STALE_REVISION' || submit.error.code === 'WINDOW_CLOSED');
   const blocked = submit.isPending || refused;
   const retrying = !refused && (submit.isError || (attempted && submit.isIdle));
+  const refusalCode = submit.error instanceof ApiRequestError ? submit.error.code : undefined;
   // Why there is no season game to record, once that is known.
   const noSeasonGame =
     base || myTeam || !seasons.isSuccess || (season && !teams.isSuccess)
@@ -588,7 +597,7 @@ function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormP
         disabled={!complete || violations.length > 0 || blocked}
         onPress={() => send(false)}
       />
-      {complete && violations.length > 0 && (
+      {offersReview(complete, violations.length, refusalCode) && (
         <Button
           testID="submit-for-review"
           label="Submit for commissioner review"

@@ -8,7 +8,7 @@ import { memberships, seasons, seasonTeams, teamRoster } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
 import { recordAudit } from './audit.ts';
 import { lockForCommissionerEdit } from './leagues.ts';
-import { type Actor, assertCommissioner } from './membership.ts';
+import { type Actor, assertCommissioner, formerMember } from './membership.ts';
 import { finalizeIfSettled } from './seasons.ts';
 
 // Teams (SPEC §3.7). A member proposes a team with a partner, the partner accepts, and a
@@ -53,15 +53,23 @@ const seasonFinalized = () =>
 const proposer = alias(memberships, 'proposer');
 const partner = alias(memberships, 'partner');
 
-type NamedTeam = { team: TeamRow; proposerName: string; partnerName: string };
+type NamedTeam = { team: TeamRow; proposer: TeamPlayer; partner: TeamPlayer };
 
-// Teams with the names of the pair that proposed each, by name.
+// Teams with the pair that proposed each, by name.
 function selectTeams(db: Db | Tx, where: SQL | undefined): Promise<NamedTeam[]> {
   return db
     .select({
       team: seasonTeams,
-      proposerName: proposer.displayName,
-      partnerName: partner.displayName,
+      proposer: {
+        membershipId: proposer.id,
+        displayName: proposer.displayName,
+        former: formerMember(proposer.status),
+      },
+      partner: {
+        membershipId: partner.id,
+        displayName: partner.displayName,
+        former: formerMember(partner.status),
+      },
     })
     .from(seasonTeams)
     .innerJoin(proposer, eq(proposer.id, seasonTeams.proposedBy))
@@ -82,6 +90,7 @@ async function openRosters(
       teamId: teamRoster.teamId,
       membershipId: teamRoster.membershipId,
       displayName: memberships.displayName,
+      former: formerMember(memberships.status),
     })
     .from(teamRoster)
     .innerJoin(memberships, eq(memberships.id, teamRoster.membershipId))
@@ -98,10 +107,7 @@ async function openRosters(
   return byTeam;
 }
 
-function toTeam(
-  { team, proposerName, partnerName }: NamedTeam,
-  rosters: Map<string, TeamPlayer[]>,
-): Team {
+function toTeam({ team, proposer, partner }: NamedTeam, rosters: Map<string, TeamPlayer[]>): Team {
   // Parsed rather than cast, like a season: a drifted row fails here, not in a client.
   return Team.parse({
     id: team.id,
@@ -111,13 +117,7 @@ function toTeam(
     proposedBy: team.proposedBy,
     // Only an approved team's roster can change, so any other team's players are the pair it
     // was proposed with.
-    players:
-      team.status === 'approved'
-        ? (rosters.get(team.id) ?? [])
-        : [
-            { membershipId: team.proposedBy, displayName: proposerName },
-            { membershipId: team.partnerId, displayName: partnerName },
-          ],
+    players: team.status === 'approved' ? (rosters.get(team.id) ?? []) : [proposer, partner],
     createdAt: team.createdAt.toISOString(),
   });
 }

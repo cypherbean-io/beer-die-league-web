@@ -251,7 +251,9 @@ async function auditLog(l: League, as: Caller = l.commissioner) {
   return AuditResponse.parse(await res.json()).events;
 }
 
+// A player as the audit log names them, and as a team lists them.
 const named = (p: Player, displayName: string) => ({ membershipId: p.membershipId, displayName });
+const onTeam = (p: Player, displayName: string) => ({ ...named(p, displayName), former: false });
 const rosterOf = (team: Team) => team.players.map((p) => p.membershipId);
 
 describe('proposing a team', () => {
@@ -272,7 +274,7 @@ describe('proposing a team', () => {
       name: 'Table Kings',
       status: 'proposed',
       proposedBy: t.bo.membershipId,
-      players: [named(t.bo, 'Bo'), named(t.cy, 'Cy')],
+      players: [onTeam(t.bo, 'Bo'), onTeam(t.cy, 'Cy')],
       createdAt: NOW,
     });
   });
@@ -999,7 +1001,7 @@ describe("editing an approved team's roster", () => {
       await setRoster(t, t.commissioner, team, [t.bo.membershipId, t.di.membershipId]),
     );
 
-    expect(edited).toEqual({ ...team, players: [named(t.bo, 'Bo'), named(t.di, 'Di')] });
+    expect(edited).toEqual({ ...team, players: [onTeam(t.bo, 'Bo'), onTeam(t.di, 'Di')] });
     const rows = await api.db.execute<{
       membership_id: string;
       valid_from: Date;

@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { ErrorBody, MeResponse, VerifyCodeResponse } from '@beer-die/core';
-import { sql } from 'drizzle-orm';
+import { type SQL, sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
-import { freshDatabase, resetTables } from './support/db.ts';
+import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -513,6 +513,72 @@ describe('POST /api/auth/logout', () => {
 
     expect(res.status).toBe(403);
     expect((await getMe({ cookie })).status).toBe(200);
+  });
+
+  it('rejects a body with unknown keys with 422 VALIDATION, keeping the session', async () => {
+    const cookie = await signInWeb('ana@example.com');
+
+    const res = await post('/api/auth/logout', { everywhere: true }, { cookie });
+
+    expect(res.status).toBe(422);
+    expect(await errorCode(res)).toBe('VALIDATION');
+    expect((await getMe({ cookie })).status).toBe(200);
+  });
+});
+
+describe('sign-in lock order', () => {
+  // Takes a row lock in a transaction of its own and holds it until the returned function
+  // is called.
+  async function hold(statement: SQL): Promise<() => Promise<void>> {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let taken!: () => void;
+    const locked = new Promise<void>((resolve) => (taken = resolve));
+    const done = api.db.transaction(async (tx) => {
+      await tx.execute(statement);
+      taken();
+      await released;
+    });
+    await locked;
+    return async () => {
+      release();
+      await done;
+    };
+  }
+
+  // Polls, without waiting on it, until some transaction holds the email's code row.
+  async function codeRowLocked(email: string): Promise<void> {
+    for (let i = 0; i < 500; i++) {
+      const free = await api.db.execute(
+        sql`select 1 from auth_codes where email = ${email} for update skip locked`,
+      );
+      if (free.length === 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('the code row was never locked');
+  }
+
+  it('lets a code request and a verify for the same email wait on each other without deadlocking', async () => {
+    const email = 'ana@example.com';
+    const code = await mailedCode(email);
+    const releaseCode = await hold(sql`select 1 from auth_codes where email = ${email} for update`);
+    const releaseUser = await hold(sql`select 1 from users where email = ${email} for share`);
+
+    // The verify queues for the code row and the request for the first row it takes. Once the
+    // verify holds the code row it waits for the user row, so a request that took the user
+    // row first would then wait on the verify: a deadlock.
+    const verifying = verify(email, code);
+    await waitForLockWaiters(api.db, 1);
+    const requesting = post('/api/auth/code', { email });
+    await waitForLockWaiters(api.db, 2);
+    await releaseCode();
+    await codeRowLocked(email);
+    await releaseUser();
+    const [verified, requested] = await Promise.all([verifying, requesting]);
+
+    expect(api.logs.filter((e) => e.msg === 'unhandled error')).toEqual([]);
+    expect(verified.status).toBe(200);
+    expect(requested.status).toBe(202);
   });
 });
 

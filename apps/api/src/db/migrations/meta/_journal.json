@@ -127,6 +127,13 @@
       "when": 1792592220167,
       "tag": "0017_keep_name_on_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792703834411,
+      "tag": "0018_counted_results_opponent_points",
+      "breakpoints": true
     }
   ]
 }

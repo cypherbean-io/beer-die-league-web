@@ -6,6 +6,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { type ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
 import { isRefusal, kindLabel, refusalFor, RevisionView } from '../src/game';
+import { confirmNotice } from '../src/gameText';
 import { Button } from '../src/ui';
 
 export default function Inbox() {
@@ -26,12 +27,8 @@ function InboxList({ membership }: { membership: MyMembership }) {
   const [notice, setNotice] = useState<string | null>(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['inbox', leagueId] });
 
-  const onConfirmed = (game: Game) => {
-    setNotice(
-      game.status === 'confirmed'
-        ? 'Confirmed. All four players have confirmed, so the game now counts.'
-        : 'Confirmed. The game counts once all four players confirm it.',
-    );
+  const onConfirmed = (game: Game, revisionId: string) => {
+    setNotice(confirmNotice(game, revisionId));
     void refresh();
   };
   const onRefused = (error: ApiRequestError) => {
@@ -90,7 +87,7 @@ type PendingGameProps = {
   myId: string;
   game: Game;
   revision: GameRevision;
-  onConfirmed: (game: Game) => void;
+  onConfirmed: (game: Game, revisionId: string) => void;
   onRefused: (error: ApiRequestError) => void;
 };
 
@@ -100,7 +97,7 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
   // rather than confirmed unseen.
   const confirm = useMutation({
     mutationFn: () => confirmRevision(leagueId, game.id, revision.id),
-    onSuccess: onConfirmed,
+    onSuccess: (confirmed) => onConfirmed(confirmed, revision.id),
     onError: (error) => {
       if (isRefusal(error)) onRefused(error);
     },

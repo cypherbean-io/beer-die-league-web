@@ -3,6 +3,7 @@ import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError } from './api/client';
+import { playerName } from './gameText';
 
 // Refusals that mean what was shown is out of date, as opposed to a failed request worth
 // retrying.
@@ -172,7 +173,7 @@ function PlayerRow({ testID, player, isMe, forced }: PlayerRowProps) {
   return (
     <Text testID={testID}>
       <Text style={styles.name}>
-        {player.displayName}
+        {playerName(player)}
         {isMe ? ' (you)' : ''}
         {player.isSub ? ' (sub)' : ''}
       </Text>

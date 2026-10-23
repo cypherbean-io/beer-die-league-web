@@ -97,6 +97,11 @@ export type MembershipRole = z.infer<typeof MembershipRole>;
 export const MembershipStatus = z.enum(['pending', 'approved', 'removed', 'left', 'deleted']);
 export type MembershipStatus = z.infer<typeof MembershipStatus>;
 
+// Next to a member's name on a game, a stat line, or a roster: whether they have since left,
+// been removed, or deleted their account, so the app can mark them as a former member
+// (SPEC §4).
+const Former = z.boolean();
+
 // The caller's own membership, as listed on /me.
 export const MyMembership = z.strictObject({
   id: z.uuid(),
@@ -294,7 +299,11 @@ export type RosterBody = z.input<typeof RosterBody>;
 export const TeamStatus = z.enum(['proposed', 'accepted', 'approved', 'rejected', 'withdrawn']);
 export type TeamStatus = z.infer<typeof TeamStatus>;
 
-const TeamPlayer = z.strictObject({ membershipId: z.uuid(), displayName: z.string() });
+const TeamPlayer = z.strictObject({
+  membershipId: z.uuid(),
+  displayName: z.string(),
+  former: Former,
+});
 
 export const Team = z.strictObject({
   id: z.uuid(),
@@ -670,6 +679,7 @@ export const GameRuleViolation = z.strictObject({
 export const GamePlayer = z.strictObject({
   membershipId: z.uuid(),
   displayName: z.string(),
+  former: Former,
   side: GameSide,
   points: z.int(),
   sinks: z.int(),
@@ -791,6 +801,7 @@ export type PlayerStatsQuery = z.input<typeof PlayerStatsQuery>;
 export const PlayerStats = z.strictObject({
   membershipId: z.uuid(),
   displayName: z.string(),
+  former: Former,
   gamesPlayed: z.int(),
   wins: z.int(),
   losses: z.int(),
@@ -812,7 +823,7 @@ export type PlayerStatResponse = z.infer<typeof PlayerStatResponse>;
 export const PartnershipStatsQuery = z.strictObject({ scope: StatsScope });
 export type PartnershipStatsQuery = z.input<typeof PartnershipStatsQuery>;
 
-const Partner = z.strictObject({ membershipId: z.uuid(), displayName: z.string() });
+const Partner = z.strictObject({ membershipId: z.uuid(), displayName: z.string(), former: Former });
 
 // Two players' line in a scope from the confirmed games they played on the same side, subs
 // included (SPEC §3.7). Points (sink points included) and sinks are the pair's combined

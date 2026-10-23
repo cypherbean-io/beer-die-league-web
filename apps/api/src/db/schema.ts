@@ -541,7 +541,7 @@ export const confirmations = pgTable(
 // The partner is the other player on the same side of that revision, the one who actually
 // played; each side has exactly two players. In a season game, the season and the team are
 // the confirmed revision's own, so a later roster edit never moves a counted result; both are
-// null in an exhibition game. The opponent column arrives with the slice that reads it.
+// null in an exhibition game. The opponents' points are the other side's total.
 export const countedResults = pgView('counted_results', {
   leagueId: uuid('league_id').notNull(),
   gameId: uuid('game_id').notNull(),
@@ -557,11 +557,15 @@ export const countedResults = pgView('counted_results', {
   won: boolean('won').notNull(),
   points: integer('points').notNull(),
   sinks: integer('sinks').notNull(),
+  // The other side's points, sink points included.
+  opponentPoints: integer('opponent_points').notNull(),
 }).as(sql`
   select g.league_id, g.id as game_id, g.kind, r.id as revision_id, r.played_at, r.season_id,
          p.membership_id, p.side, q.membership_id as partner_membership_id,
          case p.side when 'A' then r.side_a_team_id else r.side_b_team_id end as team_id,
-         p.is_sub, p.side = r.winner as won, p.points, p.sinks
+         p.is_sub, p.side = r.winner as won, p.points, p.sinks,
+         (select sum(o.points) from revision_players o
+          where o.revision_id = r.id and o.side <> p.side)::int as opponent_points
   from games g
   join game_revisions r on r.id = g.confirmed_revision_id and r.game_id = g.id
   join revision_players p on p.revision_id = r.id

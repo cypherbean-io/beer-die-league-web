@@ -5,10 +5,12 @@ import {
   CreateInviteResponse,
   ErrorBody,
   type Game,
+  GameDetailResponse,
   GameResponse,
   INBOX_MAX,
   InboxResponse,
   JoinResponse,
+  PlayerStatsResponse,
   type ExhibitionGameBody,
 } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
@@ -374,6 +376,7 @@ describe('submitting an exhibition game', () => {
           {
             membershipId: t.ana.membershipId,
             displayName: 'Ana',
+            former: false,
             side: 'A',
             points: 6,
             sinks: 0,
@@ -383,6 +386,7 @@ describe('submitting an exhibition game', () => {
           {
             membershipId: t.bo.membershipId,
             displayName: 'Bo',
+            former: false,
             side: 'A',
             points: 5,
             sinks: 0,
@@ -392,6 +396,7 @@ describe('submitting an exhibition game', () => {
           {
             membershipId: t.cy.membershipId,
             displayName: 'Cy',
+            former: false,
             side: 'B',
             points: 5,
             sinks: 0,
@@ -401,6 +406,7 @@ describe('submitting an exhibition game', () => {
           {
             membershipId: t.di.membershipId,
             displayName: 'Di',
+            former: false,
             side: 'B',
             points: 4,
             sinks: 0,
@@ -466,6 +472,55 @@ describe('submitting an exhibition game', () => {
     const recorded = await submitted(t, t.ana.caller, game(t, { playedAt: NOW }));
 
     expect(recorded.openRevision!.playedAt).toBe(NOW);
+  });
+});
+
+describe('editing the league rules', () => {
+  // Under these rules the default 11–9 game falls short of the target.
+  const LONGER_GAMES = { targetScore: 21 };
+
+  async function gameDetail(t: League, gameId: string) {
+    const res = await call('GET', `/api/leagues/${t.leagueId}/games/${gameId}`, {
+      as: t.commissioner,
+    });
+    expect(res.status).toBe(200);
+    return GameDetailResponse.parse(await res.json());
+  }
+
+  async function combinedStats(t: League) {
+    const res = await call('GET', `/api/leagues/${t.leagueId}/stats/players?scope=combined`, {
+      as: t.commissioner,
+    });
+    expect(res.status).toBe(200);
+    return PlayerStatsResponse.parse(await res.json()).players;
+  }
+
+  it('leaves a confirmed game, and the stats it gives, unchanged', async () => {
+    const t = await table();
+    let g = await submitted(t, t.ana.caller, game(t));
+    for (const p of [t.bo, t.cy, t.di]) g = await confirmed(t, p.caller, g);
+    const [detail, stats] = [await gameDetail(t, g.id), await combinedStats(t)];
+
+    expect((await patchLeague(t, 'rules', LONGER_GAMES)).status).toBe(200);
+
+    expect(await gameDetail(t, g.id)).toEqual(detail);
+    expect(await combinedStats(t)).toEqual(stats);
+  });
+
+  it('confirms an open game under its snapshot, without a review', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    expect((await patchLeague(t, 'rules', LONGER_GAMES)).status).toBe(200);
+
+    let after = g;
+    for (const p of [t.bo, t.cy, t.di]) after = await confirmed(t, p.caller, after);
+
+    expect(after).toMatchObject({
+      status: 'confirmed',
+      rulesSnapshot: DEFAULT_RULES,
+      confirmedRevision: { id: g.openRevision!.id, ruleViolations: [], overrideStatus: null },
+    });
+    expect(await pointsCounted(t.ana.membershipId)).toEqual([6]);
   });
 });
 
@@ -1002,20 +1057,16 @@ describe('the confirmation window', () => {
     expect(await rows('confirmations')).toBe(3);
   });
 
-  it('answers a repeated confirmation after the window closes with the expired game', async () => {
+  it('refuses a repeated confirmation with 409 WINDOW_CLOSED once the window has closed', async () => {
     const t = await table();
     const g = await submitted(t, t.ana.caller, game(t));
     clock.advance(7 * DAY);
 
-    const again = await confirmed(t, t.ana.caller, g);
+    const res = await confirm(t, t.ana.caller, g.id, g.openRevision!.id);
 
-    expect(again).toMatchObject({
-      status: 'expired',
-      windowExpiresAt: null,
-      openRevision: null,
-      confirmedRevision: null,
-    });
-    expect(await storedStatus(g.id)).toBe('expired');
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await rows('confirmations')).toBe(1);
   });
 });
 
@@ -1342,6 +1393,18 @@ describe('correcting a game', () => {
     expect(res.status).toBe(409);
     expect((await errorOf(res)).code).toBe('STALE_REVISION');
     expect(await rows('confirmations')).toBe(2);
+  });
+
+  it('refuses a repeated confirmation of the superseded revision with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await confirmed(t, t.bo.caller, g);
+    await corrected(t, t.di.caller, g.id, correction(t, g));
+
+    const res = await confirm(t, t.bo.caller, g.id, g.openRevision!.id);
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
   });
 
   it('puts the game back in the inbox of a player whose confirmation it reset', async () => {
@@ -2176,6 +2239,21 @@ describe('force-confirming', () => {
     expect(await rows('audit_events')).toBe(0);
   });
 
+  it('refuses a repeated force-confirm with 409 WINDOW_CLOSED once the window has closed', async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    await forced(t, g, [t.bo]);
+    clock.advance(7 * DAY);
+
+    const res = await forceConfirm(t, t.ana.caller, g.id, g.openRevision!.id, {
+      membershipIds: [t.bo.membershipId],
+    });
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('WINDOW_CLOSED');
+    expect(await rows('audit_events')).toBe(1);
+  });
+
   it('accepts a force-confirm 1 s before the window closes', async () => {
     const t = await table();
     const g = await submitted(t, t.ana.caller, game(t));
@@ -2560,7 +2638,20 @@ describe('deciding an override', () => {
       openRevision: { number: 2, status: 'open', ruleViolations: [], overrideStatus: null },
     });
     expect(confirmationsOf(fixed)).toEqual([null, null, null, 'player']);
-    expect(await revisionStatus(g.openRevision!.id)).toBe('superseded');
+    expect(await revisionStatus(g.openRevision!.id)).toBe('rejected');
+  });
+
+  it('refuses correcting a rejected revision a correction has replaced with 409 STALE_REVISION', async () => {
+    const t = await table();
+    const g = await sentForReview(t);
+    const rejected = await decided(t, g, 'reject');
+    await corrected(t, t.di.caller, g.id, correction(t, rejected));
+
+    const res = await correct(t, t.cy.caller, g.id, correction(t, rejected));
+
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe('STALE_REVISION');
+    expect(await rows('game_revisions')).toBe(2);
   });
 
   it('refuses correcting a rejected revision once the window has closed with 409 WINDOW_CLOSED', async () => {
@@ -3167,6 +3258,18 @@ describe('the game write limit', () => {
 
     expect(res.status).toBe(429);
     expect((await errorOf(res)).code).toBe('RATE_LIMITED');
+  });
+
+  it('answers a retry of an earlier submission with its game, even past the limit', async () => {
+    const t = await table();
+    const body = game(t);
+    const first = await submitted(t, t.ana.caller, body);
+    for (let i = 1; i < GAME_WRITES_PER_HOUR; i++) await submitted(t, t.ana.caller, game(t));
+
+    const res = await submit(t, t.ana.caller, body);
+
+    expect(res.status).toBe(200);
+    expect(GameResponse.parse(await res.json()).game).toEqual(first);
   });
 
   it('counts corrections toward the same limit', async () => {

@@ -1,15 +1,21 @@
 import type { ErrorBody, HealthResponse } from '@beer-die/core';
 import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
-import type { Db } from '../db/client.ts';
+import type { AppDeps } from '../app.ts';
+import type { AuthEnv } from '../auth/middleware.ts';
+import { safeErrorFields } from '../log.ts';
 
-export function healthRoutes(db: Db) {
-  return new Hono().get('/health', async (c) => {
+export function healthRoutes(deps: Pick<AppDeps, 'db' | 'log'>) {
+  return new Hono<AuthEnv>().get('/health', async (c) => {
     try {
-      await db.execute(sql`select 1`);
+      await deps.db.execute(sql`select 1`);
     } catch (err) {
-      const code = (err as { code?: unknown }).code;
-      console.error(JSON.stringify({ level: 'error', msg: 'health: db check failed', code }));
+      deps.log({
+        level: 'error',
+        msg: 'health: db check failed',
+        requestId: c.get('requestId'),
+        ...safeErrorFields(err),
+      });
       const body: ErrorBody = {
         error: { code: 'DB_UNAVAILABLE', message: 'Database unavailable' },
       };

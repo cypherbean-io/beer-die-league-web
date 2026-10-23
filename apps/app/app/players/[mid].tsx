@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError, getPlayerProfile } from '../../src/api/client';
 import { currentMembership, useMe } from '../../src/api/hooks';
+import { playerName } from '../../src/gameText';
 import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../../src/stats';
 
 const LINES: Array<{ label: string; value: (p: PlayerStats) => string }> = [
@@ -42,10 +43,10 @@ function Profile({ membership, membershipId }: { membership: MyMembership; membe
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Stack.Screen options={{ title: player?.displayName ?? 'Player' }} />
+      <Stack.Screen options={{ title: player ? playerName(player) : 'Player' }} />
       {player && (
         <Text testID="profile-name" style={styles.title}>
-          {player.displayName}
+          {playerName(player)}
           {player.membershipId === membership.id ? ' (you)' : ''}
         </Text>
       )}
