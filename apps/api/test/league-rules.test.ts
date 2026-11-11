@@ -10,7 +10,13 @@ import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FixedClock } from '../src/clock.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  fromMembershipSetup,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -105,12 +111,14 @@ async function getLeague(l: League, as: Caller = l.commissioner) {
   return LeagueResponse.parse(await res.json()).league;
 }
 
+// Without the entries setup wrote to build the fixture (see fromMembershipSetup).
 async function auditLog(l: League, as: Caller = l.commissioner, query = '') {
   const res = await call('GET', `/api/leagues/${l.leagueId}/audit${query ? `?${query}` : ''}`, {
     as,
   });
   expect(res.status).toBe(200);
-  return AuditResponse.parse(await res.json());
+  const page = AuditResponse.parse(await res.json());
+  return { ...page, events: page.events.filter((e) => !fromMembershipSetup(e)) };
 }
 
 function targetScoresAfter(events: AuditEvent[]): Array<number | null> {

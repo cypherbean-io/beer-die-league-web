@@ -20,7 +20,13 @@ import { FixedClock } from '../src/clock.ts';
 import { sweepExpired } from '../src/domain/games.ts';
 import { SEASON_CREATES_PER_HOUR } from '../src/domain/seasons.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  fromMembershipSetup,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -153,10 +159,12 @@ async function seasonNow(l: League, seasonId: string): Promise<Season> {
   return season;
 }
 
+// Without the entries setup wrote to build the fixture (see fromMembershipSetup).
 async function auditLog(l: League) {
   const res = await call('GET', `/api/leagues/${l.leagueId}/audit`, { as: l.commissioner });
   expect(res.status).toBe(200);
-  return AuditResponse.parse(await res.json()).events;
+  const { events } = AuditResponse.parse(await res.json());
+  return events.filter((e) => !fromMembershipSetup(e));
 }
 
 const line = (p: Player, points: number) => ({ membershipId: p.membershipId, points, sinks: 0 });

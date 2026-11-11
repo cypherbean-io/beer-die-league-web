@@ -413,6 +413,12 @@ export const TeamRejectedDetails = z.strictObject({ status: z.enum(['proposed', 
 // removal voided, because the member played in them.
 export const MemberRemovedDetails = z.strictObject({ voidedGameIds: z.array(z.uuid()) });
 
+// What the log stores when a commissioner changes a member's role: the role before and after.
+export const RoleChangeDetails = z.strictObject({
+  before: MembershipRole,
+  after: MembershipRole,
+});
+
 // One entry in the league's append-only log of commissioner actions. Each action has its
 // own `details` shape, which never holds names, emails, or tokens.
 export const AuditEvent = z.discriminatedUnion('action', [
@@ -495,6 +501,24 @@ export const AuditEvent = z.discriminatedUnion('action', [
     targetType: z.literal('membership'),
     details: MemberRemovedDetails,
     // The member removed, named when the log is read rather than stored in `details`.
+    player: AuditPlayer,
+  }),
+  // Approving a join request and changing a role both decide who can act in the league, so
+  // they are logged like any other commissioner action.
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('member.approved'),
+    targetType: z.literal('membership'),
+    details: z.strictObject({}),
+    // The member approved, named when the log is read.
+    player: AuditPlayer,
+  }),
+  z.strictObject({
+    ...auditEventFields,
+    action: z.literal('member.role_changed'),
+    targetType: z.literal('membership'),
+    details: RoleChangeDetails,
+    // The member whose role changed, named when the log is read.
     player: AuditPlayer,
   }),
 ]);

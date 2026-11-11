@@ -511,13 +511,18 @@ describe('deleting an account', () => {
 
   it('is not recorded in the league log, which is for commissioner actions', async () => {
     const s = await setup();
+    const log = async () => {
+      const res = await call('GET', `/api/leagues/${s.leagueId}/audit`, { as: s.commissioner });
+      return AuditResponse.parse(await res.json()).events;
+    };
+    const before = await log();
 
     await deleted(s.bo);
 
-    const res = await call('GET', `/api/leagues/${s.leagueId}/audit`, { as: s.commissioner });
-    const actions = AuditResponse.parse(await res.json()).events.map((e) => e.action);
-    expect(actions).not.toContain('member.removed');
-    expect(actions.every((a) => a.startsWith('season.') || a.startsWith('team.'))).toBe(true);
+    // Setup's own entries (seasons, teams, approvals) and nothing more.
+    const after = await log();
+    expect(after.map((e) => e.action)).not.toContain('member.removed');
+    expect(after.map((e) => e.id)).toEqual(before.map((e) => e.id));
   });
 
   it('deletes a membership still awaiting approval, which frees its name', async () => {

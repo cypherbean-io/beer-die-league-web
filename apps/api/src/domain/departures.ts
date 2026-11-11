@@ -163,9 +163,8 @@ async function lockLeague(tx: Tx, leagueId: string): Promise<void> {
     .for('no key update');
 }
 
-// The league's approved commissioners and members. The caller holds the league lock. An
-// approval doesn't take it, but only a commissioner can approve, so a member count can go stale
-// only through the deleting commissioner's own approval.
+// The league's approved commissioners and members. The caller holds the league lock, which an
+// approval and a role change take too (domain/membership.ts), so neither count can go stale.
 async function headcount(
   tx: Tx,
   leagueId: string,

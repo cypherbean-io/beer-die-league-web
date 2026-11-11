@@ -64,7 +64,8 @@ once, and that line counts only after the players confirm it.
   idempotency key prevents duplicate games.
 - **Account deletion** inside the app. The account is anonymized and its games are kept,
   with an option to keep the display name on historical games.
-- An append-only audit log of commissioner actions, visible to all members.
+- An append-only audit log of commissioner actions, visible to all members. It includes
+  approving a member and changing a role, since both decide who can act in the league.
 - Docker Compose for local dev, tests, and production on a single VPS: Caddy for TLS and
   static web, Postgres, the API, a worker, and nightly backups.
 
@@ -561,7 +562,7 @@ There is no date of birth, no location, and no payment data.
 | XSS | React escaping; no `dangerouslySetInnerHTML`. Display names: NFKC-normalized, 2–24 characters (letters, digits, space, `-_.'`). Caddy sets a CSP (`default-src 'self'`, `connect-src 'self'`, inline styles allowed for react-native-web) and `X-Content-Type-Options`. |
 | Invite token leaks through the Referer header | `Referrer-Policy: no-referrer` and no third-party assets. Tokens are revocable and expire, and joining still requires approval. |
 | IDOR / cross-league access | `leagueId` always comes from the resolved membership; non-members get `404`; role checks happen in the domain layer |
-| Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join |
+| Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join, and each approval and role change is audited |
 | Commissioner abuse (force-confirm, overrides on their own games) | Allowed by decision, but every such action is audited and visible to all members, flagged when the commissioner played |
 | Duplicate or replayed submissions | Idempotency key plus a payload hash |
 | Race conditions | Game row lock; one transition function |
@@ -682,6 +683,8 @@ sinks don't end the game):
   gets `404` for league Y's resources.
 - A non-commissioner calling a commissioner route gets `403`.
 - The last commissioner can't demote themselves or leave.
+- Approving a member and changing a role each write one audit entry; a refused or no-op
+  change writes none.
 
 **Submit**
 

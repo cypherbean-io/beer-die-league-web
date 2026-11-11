@@ -12,11 +12,12 @@ import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import { TOKEN_PATTERN } from '../auth/sessions.ts';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
-import type { Db } from '../db/client.ts';
+import type { Db, Tx } from '../db/client.ts';
 import { invites, leagues, memberships, users } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
 import { enqueueEmail } from '../mail/outbox.ts';
 import { MEMBER_PENDING, memberPendingParams } from '../mail/templates.ts';
+import { recordAudit } from './audit.ts';
 
 export const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 // A refused join reveals whether a name is taken, so attempts are capped per user. Name
@@ -30,6 +31,9 @@ const HOUR_MS = 60 * 60 * 1000;
 export type Actor = { id: string; leagueId: string; userId: string; role: MembershipRole };
 
 type Deps = { db: Db; clock: Clock; config: { appOrigin: string; authSecret: string } };
+
+// What an audited commissioner action needs: the clock stamps its log entry.
+type AuditedDeps = { db: Db; clock: Clock };
 
 const notFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
 
@@ -269,7 +273,7 @@ export async function listMembers(db: Db, actor: Actor): Promise<Member[]> {
 }
 
 // 404 when the membership isn't in the actor's league; otherwise the given conflict.
-async function missingOr(db: Db, actor: Actor, membershipId: string, conflict: ApiError) {
+async function missingOr(db: Db | Tx, actor: Actor, membershipId: string, conflict: ApiError) {
   const [row] = await db
     .select({ id: memberships.id })
     .from(memberships)
@@ -279,21 +283,65 @@ async function missingOr(db: Db, actor: Actor, membershipId: string, conflict: A
 
 const notPending = () => new ApiError(409, 'NOT_PENDING', 'That member is not awaiting approval');
 
-export async function approveMember(db: Db, actor: Actor, membershipId: string): Promise<Member> {
+// Locks the league row and re-reads the actor's role under it, so a commissioner demoted while
+// the request waited can't act, and the log never names as actor someone who no longer was
+// one. lockForCommissionerEdit (domain/leagues.ts) does the same for every other audited
+// commissioner action; that module imports this one, so the few lines are repeated here.
+async function lockLeagueAsCommissioner(
+  tx: Tx,
+  actor: Actor,
+  strength: 'update' | 'no key update',
+): Promise<void> {
+  await tx
+    .select({ id: leagues.id })
+    .from(leagues)
+    .where(eq(leagues.id, actor.leagueId))
+    .for(strength);
+  const [self] = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')));
+  assertCommissioner({ ...actor, role: self?.role ?? 'member' });
+}
+
+// Lets a pending member into the league. Audited: it decides who can play and be played with.
+// The league lock comes before the member's row, the order a departure takes them in
+// (domain/departures.ts).
+export async function approveMember(
+  deps: AuditedDeps,
+  actor: Actor,
+  membershipId: string,
+): Promise<Member> {
   assertCommissioner(actor);
-  const [row] = await db
-    .update(memberships)
-    .set({ status: 'approved' })
-    .where(
-      and(
-        eq(memberships.id, membershipId),
-        eq(memberships.leagueId, actor.leagueId),
-        eq(memberships.status, 'pending'),
-      ),
-    )
-    .returning(memberColumns);
-  if (!row) throw await missingOr(db, actor, membershipId, notPending());
-  return row;
+  const now = deps.clock.now();
+  return deps.db.transaction(async (tx) => {
+    await lockLeagueAsCommissioner(tx, actor, 'no key update');
+    const [row] = await tx
+      .update(memberships)
+      .set({ status: 'approved' })
+      .where(
+        and(
+          eq(memberships.id, membershipId),
+          eq(memberships.leagueId, actor.leagueId),
+          eq(memberships.status, 'pending'),
+        ),
+      )
+      .returning(memberColumns);
+    if (!row) throw await missingOr(tx, actor, membershipId, notPending());
+    await recordAudit(
+      tx,
+      actor,
+      {
+        action: 'member.approved',
+        targetType: 'membership',
+        targetId: row.id,
+        actorWasParticipant: false,
+        details: {},
+      },
+      now,
+    );
+    return row;
+  });
 }
 
 // A pending member has no history, so rejecting deletes the row and frees the name.
@@ -314,25 +362,19 @@ export async function rejectMember(db: Db, actor: Actor, membershipId: string): 
 
 // Role changes in a league are serialized on the league row, and the actor's own role is
 // re-read under that lock, so no interleaving (two commissioners demoting each other, say)
-// can leave the league without a commissioner.
+// can leave the league without a commissioner. A change is audited, since it grants or takes
+// away every commissioner power; setting the role a member already has changes nothing and
+// isn't.
 export async function setRole(
-  db: Db,
+  deps: AuditedDeps,
   actor: Actor,
   membershipId: string,
   role: MembershipRole,
 ): Promise<Member> {
   assertCommissioner(actor);
-  return db.transaction(async (tx) => {
-    await tx
-      .select({ id: leagues.id })
-      .from(leagues)
-      .where(eq(leagues.id, actor.leagueId))
-      .for('update');
-    const [self] = await tx
-      .select({ role: memberships.role })
-      .from(memberships)
-      .where(and(eq(memberships.id, actor.id), eq(memberships.status, 'approved')));
-    assertCommissioner({ ...actor, role: self?.role ?? 'member' });
+  const now = deps.clock.now();
+  return deps.db.transaction(async (tx) => {
+    await lockLeagueAsCommissioner(tx, actor, 'update');
 
     const [target] = await tx
       .select(memberColumns)
@@ -366,6 +408,18 @@ export async function setRole(
       .where(eq(memberships.id, membershipId))
       .returning(memberColumns);
     if (!updated) throw new Error('locked membership vanished');
+    await recordAudit(
+      tx,
+      actor,
+      {
+        action: 'member.role_changed',
+        targetType: 'membership',
+        targetId: updated.id,
+        actorWasParticipant: false,
+        details: { before: target.role, after: role },
+      },
+      now,
+    );
     return updated;
   });
 }

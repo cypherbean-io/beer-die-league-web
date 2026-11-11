@@ -369,6 +369,7 @@ includes:
 - approved and rejected reviews;
 - seasons started and ended, and standings settings changed;
 - teams approved or rejected, and team players changed;
+- members approved, and roles changed;
 - members removed.
 
 ## Your account
@@ -434,14 +435,14 @@ When someone asks to join, commissioners get an email ("A new member is awaiting
 approval"). Their request appears under **Awaiting approval** on **Members**, with their
 display name and email. Members' emails are visible only at this stage.
 
-- **Approve** lets them in.
+- **Approve** lets them in. The approval appears in the league log.
 - **Reject** deletes the request and frees the name. They can ask again with a valid link.
 
 ### Roles
 
 On **Members**, choose **Make commissioner** next to a member, or **Make member** next to
 a commissioner. A league can have several commissioners, but it always needs at least
-one. Role changes don't appear in the league log.
+one. Every role change appears in the league log.
 
 ### Removing a member
 
