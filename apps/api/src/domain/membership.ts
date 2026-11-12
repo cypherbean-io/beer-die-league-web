@@ -7,7 +7,19 @@ import {
   nameKey,
 } from '@beer-die/core';
 import { randomBytes } from 'node:crypto';
-import { and, type AnyColumn, asc, count, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  and,
+  type AnyColumn,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  sql,
+} from 'drizzle-orm';
 import { hit, rateLimitKey } from '../auth/rateLimit.ts';
 import { TOKEN_PATTERN } from '../auth/sessions.ts';
 import type { Clock } from '../clock.ts';
@@ -151,7 +163,9 @@ export async function updateMe(
 }
 
 // Creates a pending membership through an invite link and tells the commissioners. Unknown,
-// expired, and revoked links are indistinguishable.
+// expired, revoked, and used-up links are indistinguishable. Each join uses one of the link's
+// `max_joins`, which bounds the names a leaked link can reserve and the mail it can send
+// commissioners.
 export async function joinLeague(
   deps: Deps,
   input: { userId: string; token: string; displayName: string },
@@ -176,16 +190,20 @@ export async function joinLeague(
       .for('share');
     if (!account) throw new ApiError(401, 'UNAUTHENTICATED', 'Sign in to continue');
 
+    // Claims one of the link's joins. The update locks the invite, so concurrent joins take
+    // turns and can't overshoot the limit; a join refused below rolls its claim back.
     const [invite] = await tx
-      .select({ leagueId: invites.leagueId })
-      .from(invites)
+      .update(invites)
+      .set({ joinCount: sql`${invites.joinCount} + 1` })
       .where(
         and(
           eq(invites.tokenSha256, sha256Hex(input.token)),
           isNull(invites.revokedAt),
           gt(invites.expiresAt, now),
+          lt(invites.joinCount, invites.maxJoins),
         ),
-      );
+      )
+      .returning({ leagueId: invites.leagueId });
     if (!invite) throw invalid;
 
     // Both unique constraints (one membership per user, one holder per name) are checked by
@@ -428,18 +446,33 @@ const inviteColumns = {
   id: invites.id,
   createdAt: invites.createdAt,
   expiresAt: invites.expiresAt,
+  maxJoins: invites.maxJoins,
+  joinCount: invites.joinCount,
 };
 
-function toInvite(row: { id: string; createdAt: Date; expiresAt: Date }): Invite {
+function toInvite(row: {
+  id: string;
+  createdAt: Date;
+  expiresAt: Date;
+  maxJoins: number;
+  joinCount: number;
+}): Invite {
   return {
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
+    maxJoins: row.maxJoins,
+    joinCount: row.joinCount,
   };
 }
 
-// The link carries the only copy of the token; just its SHA-256 is stored.
-export async function createInvite(deps: Deps, actor: Actor): Promise<CreateInviteResponse> {
+// The link carries the only copy of the token; just its SHA-256 is stored. It admits
+// `maxJoins` people and then stops working.
+export async function createInvite(
+  deps: Deps,
+  actor: Actor,
+  input: { maxJoins: number },
+): Promise<CreateInviteResponse> {
   assertCommissioner(actor);
   const now = deps.clock.now();
   const token = randomBytes(32).toString('base64url');
@@ -451,12 +484,14 @@ export async function createInvite(deps: Deps, actor: Actor): Promise<CreateInvi
       createdBy: actor.id,
       createdAt: now,
       expiresAt: new Date(now.getTime() + INVITE_TTL_MS),
+      maxJoins: input.maxJoins,
     })
     .returning(inviteColumns);
   if (!row) throw new Error('insert returned no invite');
   return { invite: toInvite(row), url: `${deps.config.appOrigin}/join/${token}` };
 }
 
+// The links that still work: not revoked, expired, or used up.
 export async function listInvites(db: Db, actor: Actor, now: Date): Promise<Invite[]> {
   assertCommissioner(actor);
   const rows = await db
@@ -467,6 +502,7 @@ export async function listInvites(db: Db, actor: Actor, now: Date): Promise<Invi
         eq(invites.leagueId, actor.leagueId),
         isNull(invites.revokedAt),
         gt(invites.expiresAt, now),
+        lt(invites.joinCount, invites.maxJoins),
       ),
     )
     .orderBy(desc(invites.createdAt));

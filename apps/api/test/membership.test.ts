@@ -95,10 +95,14 @@ async function league(name: string, email: string, displayName: string): Promise
   };
 }
 
-async function invite(l: League): Promise<{ id: string; token: string; url: string }> {
+// A new invite link; without `maxJoins`, one with the default join limit.
+async function invite(
+  l: League,
+  body: { maxJoins?: number } = {},
+): Promise<{ id: string; token: string; url: string }> {
   const res = await call('POST', `/api/leagues/${l.leagueId}/invites`, {
     as: l.commissioner,
-    body: {},
+    body,
   });
   expect(res.status).toBe(201);
   const { invite, url } = CreateInviteResponse.parse(await res.json());
@@ -335,6 +339,211 @@ describe('invites', () => {
     const res = await call('POST', `/api/invites/${token}/join`, { body: { displayName: 'Bo' } });
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe('invite join limits', () => {
+  // A new user per call, with a name nobody else has.
+  let people = 0;
+  async function someone(): Promise<{ caller: Caller; name: string }> {
+    // Read once: callers may run concurrently, and `people` moves on while one awaits.
+    const n = (people += 1);
+    return {
+      caller: await signIn(api.db, clock, `player${n}@example.com`),
+      name: `Player ${n}`,
+    };
+  }
+
+  async function joinAsSomeone(token: string): Promise<Response> {
+    const { caller, name } = await someone();
+    return join(token, caller, name);
+  }
+
+  async function listed(l: League) {
+    const res = await call('GET', `/api/leagues/${l.leagueId}/invites`, { as: l.commissioner });
+    return InvitesResponse.parse(await res.json()).invites;
+  }
+
+  it('stops a link working once as many people have joined as it allows', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 2 });
+    expect((await joinAsSomeone(token)).status).toBe(201);
+    expect((await joinAsSomeone(token)).status).toBe(201);
+
+    const res = await joinAsSomeone(token);
+
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe('INVITE_INVALID');
+  });
+
+  it('allows 10 joins through a link created without a limit, and no 11th', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l);
+    for (let i = 0; i < 10; i++) expect((await joinAsSomeone(token)).status).toBe(201);
+
+    const res = await joinAsSomeone(token);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('answers a used-up link exactly as it answers an unknown one', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 1 });
+    await joinAsSomeone(token);
+
+    const usedUp = await joinAsSomeone(token);
+    const unknown = await joinAsSomeone('A'.repeat(43));
+
+    expect(usedUp.status).toBe(unknown.status);
+    expect(await usedUp.json()).toEqual(await unknown.json());
+  });
+
+  it('does not count a join refused because the name is taken', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 1 });
+    const refused = await join(token, (await someone()).caller, 'Ana');
+    expect(refused.status).toBe(409);
+
+    const res = await joinAsSomeone(token);
+
+    expect(res.status).toBe(201);
+  });
+
+  it('does not count a second attempt by someone who already joined', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 2 });
+    const first = await someone();
+    await joined(token, first.caller, first.name);
+    expect((await join(token, first.caller, 'Another Name')).status).toBe(409);
+
+    const res = await joinAsSomeone(token);
+
+    expect(res.status).toBe(201);
+  });
+
+  it('still counts a join whose request a commissioner rejected', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 1 });
+    const first = await someone();
+    const membershipId = await joined(token, first.caller, first.name);
+    const rejected = await call(
+      'POST',
+      `/api/leagues/${l.leagueId}/members/${membershipId}/reject`,
+      { as: l.commissioner, body: {} },
+    );
+    expect(rejected.status).toBe(204);
+
+    const res = await joinAsSomeone(token);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('admits only as many of a concurrent burst as the link has joins left', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 2 });
+    const crowd = await Promise.all(Array.from({ length: 6 }, () => someone()));
+
+    const results = await Promise.all(crowd.map((p) => join(token, p.caller, p.name)));
+
+    expect(results.map((r) => r.status).sort()).toEqual([201, 201, 404, 404, 404, 404]);
+    const [row] = await api.db.execute<{ n: number }>(
+      sql`select count(*)::int as n from memberships where status = 'pending'`,
+    );
+    expect(row!.n).toBe(2);
+  });
+
+  it('counts each link separately', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const first = await invite(l, { maxJoins: 1 });
+    const second = await invite(l, { maxJoins: 1 });
+    await joinAsSomeone(first.token);
+
+    const res = await joinAsSomeone(second.token);
+
+    expect(res.status).toBe(201);
+  });
+
+  it('mails commissioners once per join the link allows, however many people try it', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 2 });
+
+    for (let i = 0; i < 6; i++) await joinAsSomeone(token);
+    await drain();
+
+    expect(sent.filter((m) => m.subject === 'A new member is awaiting approval')).toHaveLength(2);
+  });
+
+  it('reserves no name for someone refused by a used-up link', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const usedUp = await invite(l, { maxJoins: 1 });
+    await joinAsSomeone(usedUp.token);
+    await join(usedUp.token, (await someone()).caller, 'Dee');
+    const fresh = await invite(l);
+
+    const res = await join(fresh.token, (await someone()).caller, 'Dee');
+
+    expect(res.status).toBe(201);
+  });
+
+  it('shows a commissioner each link’s limit and how many joins it has had', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 3 });
+    await joinAsSomeone(token);
+
+    const invites = await listed(l);
+
+    expect(invites).toMatchObject([{ maxJoins: 3, joinCount: 1 }]);
+  });
+
+  it('reports the default limit of 10 on a link created without one', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+
+    const res = await call('POST', `/api/leagues/${l.leagueId}/invites`, {
+      as: l.commissioner,
+      body: {},
+    });
+
+    expect(CreateInviteResponse.parse(await res.json()).invite).toMatchObject({
+      maxJoins: 10,
+      joinCount: 0,
+    });
+  });
+
+  it('drops a used-up link from the active list', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const { token } = await invite(l, { maxJoins: 1 });
+    await joinAsSomeone(token);
+
+    const invites = await listed(l);
+
+    expect(invites).toEqual([]);
+  });
+
+  it.each([0, 51, 2.5, -1, '5'])(
+    'rejects a join limit of %j with 422 VALIDATION',
+    async (maxJoins) => {
+      const l = await league('Basement League', 'ana@example.com', 'Ana');
+
+      const res = await call('POST', `/api/leagues/${l.leagueId}/invites`, {
+        as: l.commissioner,
+        body: { maxJoins },
+      });
+
+      expect(res.status).toBe(422);
+      expect(await errorCode(res)).toBe('VALIDATION');
+      expect(await listed(l)).toEqual([]);
+    },
+  );
+
+  it.each([1, 50])('accepts a join limit of %i', async (maxJoins) => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+
+    const res = await call('POST', `/api/leagues/${l.leagueId}/invites`, {
+      as: l.commissioner,
+      body: { maxJoins },
+    });
+
+    expect(res.status).toBe(201);
   });
 });
 

@@ -1,6 +1,7 @@
 import {
   AuditResponse,
   type CorrectGameBody,
+  type CreateInviteBody,
   CreateInviteResponse,
   type DeleteAccountBody,
   ErrorBody,
@@ -334,8 +335,14 @@ export async function leaveLeague(leagueId: string): Promise<void> {
   await expectOk(await postJson(`${leaguePath(leagueId)}/leave`, {}));
 }
 
-export async function createInvite(leagueId: string): Promise<CreateInviteResponse> {
-  const res = await postJson(`${leaguePath(leagueId)}/invites`, {});
+// A link that `maxJoins` people can join through.
+export async function createInvite(
+  leagueId: string,
+  maxJoins: number,
+): Promise<CreateInviteResponse> {
+  const res = await postJson(`${leaguePath(leagueId)}/invites`, {
+    maxJoins,
+  } satisfies CreateInviteBody);
   if (!res.ok) throw await failure(res);
   return CreateInviteResponse.parse(await res.json());
 }

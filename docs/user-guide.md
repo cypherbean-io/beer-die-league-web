@@ -82,8 +82,9 @@ Display names follow these rules:
 - They can't look like a web address, such as `bob.com`.
 - No two members of a league can have the same name, ignoring upper and lower case.
 
-Invite links expire after 14 days, and a commissioner can revoke one sooner. If the app
-says a link is invalid or has expired, ask a commissioner for a new one.
+Invite links expire after 14 days, each works for a limited number of people, and a
+commissioner can revoke one sooner. If the app says a link is invalid or has expired, ask
+a commissioner for a new one.
 
 ### Home
 
@@ -432,12 +433,18 @@ the [league log](#members-and-the-league-log), where every member can see it.
 
 ### Inviting players
 
-1. On Home, choose **Invite players**, then **Create invite link**.
-2. Copy the link and share it. The app shows the link only once.
+1. On Home, choose **Invite players**.
+2. Set how many people can join with the link: from 1 to 50, and 10 unless you change it.
+   Then choose **Create invite link**.
+3. Copy the link and share it. The app shows the link only once.
 
-- A link works for any number of people until it expires after 14 days. Anyone who has it
-  can ask to join, and you approve every request.
-- **Active links** lists your links. Choose **Revoke** to stop a link working at once.
+- A link stops working once that many people have joined through it, or after 14 days,
+  whichever comes first. Anyone who has it can ask to join, and you approve every request.
+  A request you reject still counts toward the link's limit.
+- Keep the number close to how many people you're inviting. If a link reaches someone it
+  wasn't meant for, the limit caps how many requests and emails it can cause.
+- **Active links** lists the links that still work, with how many joins each has used.
+  Choose **Revoke** to stop a link working at once.
 - When a commissioner leaves the league or is removed, the links they created stop
   working.
 
@@ -580,7 +587,7 @@ else may be signed in as you: open **Account** and choose **Sign out everywhere*
 | The sign-in code doesn't arrive. | Wait a minute and check your spam folder. Then choose **Use a different email or resend** to request another. |
 | "That code is wrong or has expired." | Codes last 10 minutes and work only on the sign-in page that asked for them. Request a new one and enter it on the same page. |
 | "Too many attempts. Wait a while and try again." | You've hit a sign-in limit. Wait an hour or so, then try again. |
-| "This invite link is invalid or has expired." | Ask a commissioner for a new link. |
+| "This invite link is invalid or has expired." | The link expired, was revoked, or has been used by as many people as it allows. Ask a commissioner for a new link. |
 | "That name is taken in this league." | Choose another display name. |
 | **Season game** can't be selected. | You need to be on an approved team in the active season. The form says which part is missing. |
 | "That game changed after you loaded it, so nothing was saved." | Someone corrected the game meanwhile. Check the latest numbers, then act again. |

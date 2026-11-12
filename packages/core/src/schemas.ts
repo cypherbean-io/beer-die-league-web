@@ -593,11 +593,24 @@ export type JoinBody = z.input<typeof JoinBody>;
 export const JoinResponse = z.strictObject({ membership: MyMembership });
 export type JoinResponse = z.infer<typeof JoinResponse>;
 
+// How many people may join through one invite link. A link is shared, so it can leak; the
+// limit bounds what a leaked one is good for.
+export const INVITE_MAX_JOINS_DEFAULT = 10;
+export const INVITE_MAX_JOINS_LIMIT = 50;
+
+export const CreateInviteBody = z.strictObject({
+  maxJoins: z.int().min(1).max(INVITE_MAX_JOINS_LIMIT).default(INVITE_MAX_JOINS_DEFAULT),
+});
+export type CreateInviteBody = z.input<typeof CreateInviteBody>;
+
 // An invite as listed to commissioners. The token is shown only once, in the create response.
+// `joinCount` is how many of its `maxJoins` joins have been used.
 export const Invite = z.strictObject({
   id: z.uuid(),
   createdAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
+  maxJoins: z.int(),
+  joinCount: z.int(),
 });
 export type Invite = z.infer<typeof Invite>;
 

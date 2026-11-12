@@ -1,4 +1,5 @@
 import {
+  CreateInviteBody,
   type CreateInviteResponse,
   EmptyBody,
   type InvitesResponse,
@@ -28,8 +29,8 @@ export function inviteRoutes(deps: AppDeps) {
 export function leagueInviteRoutes(deps: AppDeps) {
   return new Hono<LeagueEnv>()
     .post('/invites', async (c) => {
-      await readJson(c, EmptyBody);
-      const created = await createInvite(deps, c.get('membership')!);
+      const body = await readJson(c, CreateInviteBody);
+      const created = await createInvite(deps, c.get('membership')!, body);
       return c.json(created satisfies CreateInviteResponse, 201);
     })
     .get('/invites', async (c) => {

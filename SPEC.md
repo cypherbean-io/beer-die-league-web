@@ -176,7 +176,7 @@ Anything else needs the user to approve it first.
 | `rate_limits` | `key` (`email:<hmac>` or `ip:<hmac>`), `window_start`, `count` |
 | `leagues` | `name`, rules (`target_score` ≥1 default 11, `win_by` ≥1 default 2, `sink_points` ≥0 default 0, `sink_ends_game` default false), `confirmation_window_days` 1–30 default 7, `exhibition_correction_window_days` 0–365 default 30 |
 | `memberships` | `league_id`, `user_id`, `display_name`, `name_key` (NFKC + lowercase; `unique(league_id, name_key)`), `role ('member'\|'commissioner')`, `status ('pending'\|'approved'\|'removed'\|'left'\|'deleted')`, `email_notifications bool`, `keep_name_on_delete bool`. Games reference **memberships**, not users. |
-| `invites` | `league_id`, `token_sha256`, `created_by`, `expires_at` (default 14 days), `revoked_at` |
+| `invites` | `league_id`, `token_sha256`, `created_by`, `expires_at` (default 14 days), `revoked_at`, `max_joins` 1–50 default 10, `join_count` (never above `max_joins`) |
 | `seasons` | `league_id`, `name`, `status ('draft'\|'active'\|'ended'\|'finalized')`, `started_at`, `ended_at`, `finalized_at`, `standings_config jsonb`. A partial unique index allows at most one `active` season per league. |
 | `season_teams` | `season_id`, `name`, `status ('proposed'\|'accepted'\|'approved'\|'rejected'\|'withdrawn')`, `proposed_by` |
 | `team_roster` | `team_id`, `season_id`, `membership_id`, `valid_from`, `valid_to null`. A partial unique index on `(season_id, membership_id) where valid_to is null` enforces one team per player per season. |
@@ -421,7 +421,7 @@ not in the future, and the season constraints in 3.7.
 | Me | `GET /api/me`, `PATCH /api/me`, `POST /api/me/deletion-code`, `DELETE /api/me { keepDisplayName, code, requestToken }` |
 | Invites | `POST /api/invites/:token/join { displayName }` |
 | League | `GET /leagues/:id`, `PATCH /leagues/:id/rules`, `PATCH /leagues/:id/settings` |
-| Members | `GET /members`, `POST /members/:mid/{approve,reject,remove,role}`, `POST /invites`, `DELETE /invites/:iid`, `POST /leave` |
+| Members | `GET /members`, `POST /members/:mid/{approve,reject,remove,role}`, `POST /invites { maxJoins? }`, `GET /invites`, `DELETE /invites/:iid`, `POST /leave` |
 | Seasons | `POST /seasons`, `POST /seasons/:sid/{start,end}`, `PATCH /seasons/:sid/standings-config`, `GET /seasons/:sid/standings` |
 | Teams | `POST /seasons/:sid/teams`, `POST /teams/:tid/{accept,approve,reject,withdraw}`, `PUT /teams/:tid/roster` |
 | Games | `POST /games`, `GET /games`, `GET /games/:gid`, `POST /games/:gid/revisions`, `POST /games/:gid/revisions/:rid/{confirm,force-confirm,override}` |
@@ -606,6 +606,7 @@ There is no date of birth, no location, and no payment data.
 | CSRF | SameSite=Lax cookie, plus the `Origin` and JSON content-type checks on writes. Bearer tokens are not subject to CSRF. |
 | XSS | React escaping; no `dangerouslySetInnerHTML`. Display names: NFKC-normalized, 2–24 characters (letters, digits, space, `-_.'`). Caddy sets a CSP (`default-src 'self'`, `connect-src 'self'`, inline styles allowed for react-native-web) and `X-Content-Type-Options`. |
 | Invite token leaks through the Referer header | `Referrer-Policy: no-referrer` and no third-party assets. Tokens are revocable and expire, and joining still requires approval. |
+| A leaked invite link used to flood the league | A link admits at most `max_joins` people (the commissioner chooses 1–50, default 10) and then stops working, which bounds the names it can reserve and the "awaiting approval" mail it can send. The limit is claimed in the join's own transaction, so concurrent joins can't pass it and a refused join doesn't use it up. |
 | IDOR / cross-league access | `leagueId` always comes from the resolved membership; non-members get `404`; role checks happen in the domain layer |
 | Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join, and each approval and role change is audited |
 | Commissioner abuse (force-confirm, overrides on their own games) | Allowed by decision, but every such action is audited and visible to all members, flagged when the commissioner played |
@@ -734,6 +735,9 @@ sinks don't end the game):
 - Joining by invite creates a pending membership. A pending member gets `404` on league
   data; after approval they get access.
 - An expired or revoked invite is rejected.
+- An invite stops working once `max_joins` people have joined through it, including under
+  a concurrent burst, and is then indistinguishable from an unknown one. A refused join
+  doesn't count; a join later rejected by a commissioner does.
 - Display names are unique case-insensitively and after NFKC normalization.
 - A table-driven test over **every** league route shows that a member of league X
   gets `404` for league Y's resources.
