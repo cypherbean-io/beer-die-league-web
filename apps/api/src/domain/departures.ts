@@ -1,5 +1,6 @@
 import { type Member, nameKey } from '@beer-die/core';
 import { and, asc, count, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { redeemCode } from '../auth/otp.ts';
 import type { Clock } from '../clock.ts';
 import type { Db, Tx } from '../db/client.ts';
 import {
@@ -212,8 +213,15 @@ export async function leaveLeague(deps: Deps, actor: Actor): Promise<void> {
 // it isn't audited. The last commissioner of a league with other members is refused, as when
 // leaving, and then nothing is deleted anywhere.
 //
-// Lock order: the user row FOR NO KEY UPDATE, each league by id as a departure takes it, the
-// user row FOR UPDATE, then the user's sessions, mail, and codes. Marking the row deleted first
+// A session alone can't delete the account, so a stolen session token doesn't reach this: the
+// request carries a code mailed to the account's address for the purpose (auth/otp.ts). A
+// wrong code is counted against that code and refused. A refusal for any other reason rolls
+// everything back, the code's use included, so it still works once the user has dealt with
+// the reason.
+//
+// Lock order: the deletion code (a sign-in also takes its code before the user row), the user
+// row FOR NO KEY UPDATE, each league by id as a departure takes it, the user row FOR UPDATE,
+// then the user's sessions, mail, and codes. Marking the row deleted first
 // holds off a join (domain/membership.ts) and a sign-in, which lock it harder, without blocking
 // the foreign-key check of a write that mails the user. Clearing the email changes a unique
 // column, which takes the row FOR UPDATE and so waits for such writes, whose mail is then
@@ -223,19 +231,31 @@ export async function leaveLeague(deps: Deps, actor: Actor): Promise<void> {
 // user row, so a code it holds is skipped: once the email is cleared, that sign-in creates a
 // new user, and the code is theirs.
 export async function deleteAccount(
-  deps: Deps,
-  userId: string,
-  keepDisplayName: boolean,
+  deps: Deps & { config: { authSecret: string } },
+  // `email` is the session's, which the code must have been mailed to.
+  caller: { userId: string; email: string },
+  input: { keepDisplayName: boolean; code: string; requestToken: string },
 ): Promise<void> {
   const now = deps.clock.now();
-  await deps.db.transaction(async (tx) => {
+  const { userId } = caller;
+  const { keepDisplayName } = input;
+  const confirmed = await deps.db.transaction(async (tx) => {
+    const redeemed = await redeemCode(tx, deps.config.authSecret, {
+      email: caller.email,
+      code: input.code,
+      requestToken: input.requestToken,
+      purpose: 'delete_account',
+      now,
+    });
+    // Returned rather than thrown, so a counted attempt commits.
+    if (!redeemed) return false;
     const [user] = await tx
       .update(users)
       .set({ deletedAt: now })
       .where(and(eq(users.id, userId), isNull(users.deletedAt)))
       .returning({ email: users.email });
     // Another request deleted it after this one was authorized.
-    if (!user) return;
+    if (!user) return true;
 
     // A join holds the user row FOR SHARE, so every join is either committed by now or
     // refused.
@@ -266,7 +286,11 @@ export async function deleteAccount(
         );
       }
     }
+    return true;
   });
+  if (!confirmed) {
+    throw new ApiError(403, 'INVALID_CODE', 'That code is wrong or has expired.');
+  }
 }
 
 // The deleted user's membership in one league, as above.

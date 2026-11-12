@@ -2,6 +2,7 @@ import {
   AuditResponse,
   type CorrectGameBody,
   CreateInviteResponse,
+  type DeleteAccountBody,
   ErrorBody,
   type ForceConfirmBody,
   type Game,
@@ -133,9 +134,23 @@ export async function logout(): Promise<void> {
   if (!res.ok && res.status !== 401) throw await failure(res);
 }
 
+// Signs the caller out on every device and browser, this one included.
+export async function logoutEverywhere(): Promise<void> {
+  const res = await postJson('/api/auth/logout-all', {});
+  if (!res.ok && res.status !== 401) throw await failure(res);
+}
+
+// Mails me the code that deleting my account needs. Returns its request token, which that
+// code works only with.
+export async function requestDeletionCode(): Promise<string> {
+  const res = await postJson('/api/me/deletion-code', {});
+  if (res.status !== 202) throw await failure(res);
+  return RequestCodeResponse.parse(await res.json()).requestToken;
+}
+
 // Revokes every session, so the caller is signed out afterwards.
-export async function deleteAccount(keepDisplayName: boolean): Promise<void> {
-  await expectOk(await sendJson('DELETE', '/api/me', { keepDisplayName }));
+export async function deleteAccount(body: DeleteAccountBody): Promise<void> {
+  await expectOk(await sendJson('DELETE', '/api/me', body));
 }
 
 // My display name and email setting, in every league I belong to.

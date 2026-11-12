@@ -1,10 +1,16 @@
-import { DisplayName, type MeResponse, type MyMembership } from '@beer-die/core';
+import { DisplayName, type MeResponse, type MyMembership, SignInCode } from '@beer-die/core';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import { ApiRequestError, deleteAccount, updateMe } from '../src/api/client';
-import { currentMembership, forgetSession, useMe, useSignOut } from '../src/api/hooks';
+import { ApiRequestError, deleteAccount, requestDeletionCode, updateMe } from '../src/api/client';
+import {
+  currentMembership,
+  forgetSession,
+  useMe,
+  useSignOut,
+  useSignOutEverywhere,
+} from '../src/api/hooks';
 import { Button } from '../src/ui';
 
 function settingsMessageFor(error: unknown): string {
@@ -17,8 +23,12 @@ function settingsMessageFor(error: unknown): string {
 }
 
 function messageFor(error: unknown): string {
-  if (error instanceof ApiRequestError && error.code === 'LAST_COMMISSIONER') {
-    return 'A league needs at least one commissioner. Promote someone else in each league you run before you delete your account.';
+  if (error instanceof ApiRequestError) {
+    if (error.code === 'LAST_COMMISSIONER') {
+      return 'A league needs at least one commissioner. Promote someone else in each league you run, then enter the same code again.';
+    }
+    if (error.code === 'INVALID_CODE') return 'That code is wrong or has expired.';
+    if (error.code === 'RATE_LIMITED') return 'Too many attempts. Wait a while and try again.';
   }
   return 'Something went wrong. Check your connection and try again.';
 }
@@ -26,14 +36,33 @@ function messageFor(error: unknown): string {
 export default function Account() {
   const queryClient = useQueryClient();
   const me = useMe();
-  const [confirming, setConfirming] = useState(false);
   const [keepDisplayName, setKeepDisplayName] = useState(false);
+  const [code, setCode] = useState('');
+  // Answers the request for a deletion code, and is null until one is asked for. The mailed
+  // code works only with it, so it stays in memory: after a reload, ask for a new code.
+  const [requestToken, setRequestToken] = useState<string | null>(null);
+  // Being signed in isn't enough to delete the account: the server also wants a code it mails
+  // to the account's address, so someone holding only this session can't do it.
+  const sendCode = useMutation({
+    mutationFn: requestDeletionCode,
+    onSuccess: (token) => {
+      setCode('');
+      setRequestToken(token);
+    },
+  });
   // Every session is gone afterwards, so the caller is signed out.
   const remove = useMutation({
-    mutationFn: () => deleteAccount(keepDisplayName),
+    mutationFn: (token: string) => deleteAccount({ keepDisplayName, code, requestToken: token }),
     onSuccess: () => forgetSession(queryClient),
   });
   const signOut = useSignOut();
+  const signOutEverywhere = useSignOutEverywhere();
+  // Same validator as the server, for instant feedback; the server checks again.
+  const codeValid = SignInCode.safeParse(code).success;
+  const cancelDelete = () => {
+    remove.reset();
+    setRequestToken(null);
+  };
 
   if (me.data === null) return <Redirect href="/sign-in" />;
   if (!me.data) return null;
@@ -51,6 +80,22 @@ export default function Account() {
         disabled={signOut.isPending}
         onPress={() => signOut.mutate()}
       />
+      <Text>
+        Lost a device, or think someone else is signed in as you? This signs you out everywhere,
+        here included.
+      </Text>
+      <Button
+        testID="account-sign-out-everywhere"
+        label={signOutEverywhere.isPending ? 'Signing out…' : 'Sign out everywhere'}
+        variant="secondary"
+        disabled={signOutEverywhere.isPending}
+        onPress={() => signOutEverywhere.mutate()}
+      />
+      {signOutEverywhere.isError && (
+        <Text testID="sign-out-everywhere-error" style={styles.error}>
+          Couldn’t sign you out everywhere. Check your connection and try again.
+        </Text>
+      )}
       <Text style={styles.heading}>Delete account</Text>
       <Text>
         Your email, sign-in sessions, and pending mail are erased, and you leave every league. Your
@@ -67,30 +112,51 @@ export default function Account() {
           onValueChange={setKeepDisplayName}
         />
       </View>
-      {confirming ? (
+      {requestToken ? (
         <View style={styles.confirm}>
-          <Text>Delete your account? This can&apos;t be undone.</Text>
+          <Text nativeID="delete-code-label">
+            We emailed a code to {me.data.user.email}. Enter it to delete your account. This
+            can&apos;t be undone.
+          </Text>
+          <TextInput
+            testID="delete-account-code-input"
+            aria-labelledby="delete-code-label"
+            style={styles.input}
+            value={code}
+            // As mailed, "ABCD-EFGH"; the server reads it without the hyphen or in lower case too.
+            onChangeText={(text) => setCode(text.toUpperCase().replace(/[^0-9A-Z-]/g, ''))}
+            autoComplete="one-time-code"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={9}
+          />
           <View style={styles.row}>
             <Button
               testID="confirm-delete-account"
-              label={remove.isPending ? 'Deleting…' : 'Delete'}
-              disabled={remove.isPending}
-              onPress={() => remove.mutate(undefined, { onSettled: () => setConfirming(false) })}
+              label={remove.isPending ? 'Deleting…' : 'Delete my account'}
+              disabled={!codeValid || remove.isPending}
+              onPress={() => remove.mutate(requestToken)}
             />
-            <Button label="Cancel" variant="secondary" onPress={() => setConfirming(false)} />
+            <Button label="Cancel" variant="secondary" onPress={cancelDelete} />
           </View>
+          {remove.isError && (
+            <Text testID="delete-account-error" style={styles.error}>
+              {messageFor(remove.error)}
+            </Text>
+          )}
         </View>
       ) : (
         <Button
           testID="delete-account"
-          label="Delete account"
+          label={sendCode.isPending ? 'Sending a code…' : 'Delete account'}
           variant="secondary"
-          onPress={() => setConfirming(true)}
+          disabled={sendCode.isPending}
+          onPress={() => sendCode.mutate()}
         />
       )}
-      {remove.isError && (
-        <Text testID="delete-account-error" style={styles.error}>
-          {messageFor(remove.error)}
+      {sendCode.isError && !requestToken && (
+        <Text testID="delete-account-code-error" style={styles.error}>
+          {messageFor(sendCode.error)}
         </Text>
       )}
     </ScrollView>

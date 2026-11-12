@@ -161,8 +161,14 @@ export const UpdateMeBody = z
 export type UpdateMeBody = z.input<typeof UpdateMeBody>;
 
 // Deleting the account anonymizes the caller in every league as "Deleted player #N", unless
-// they keep their display name on the games they played.
-export const DeleteAccountBody = z.strictObject({ keepDisplayName: z.boolean() });
+// they keep their display name on the games they played. A session isn't enough to delete:
+// the request carries a code mailed for the purpose by POST /api/me/deletion-code, with the
+// request token that call answered with.
+export const DeleteAccountBody = z.strictObject({
+  keepDisplayName: z.boolean(),
+  code: SignInCode,
+  requestToken: RequestToken,
+});
 export type DeleteAccountBody = z.input<typeof DeleteAccountBody>;
 
 export const LeagueRules = z.strictObject({

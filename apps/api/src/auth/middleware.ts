@@ -6,7 +6,7 @@ import { type Actor, resolveMembership } from '../domain/membership.ts';
 import { hmacHex } from '../crypto.ts';
 import { ApiError, idParam } from '../http.ts';
 import { clientIp } from './clientIp.ts';
-import { resolveSession, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
+import { resolveSession, SESSION_MAX_MS, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
 import type { Throttle, ThrottleBucket } from './throttle.ts';
 
 // `requestId` is set by the access log before anything else runs.
@@ -19,9 +19,9 @@ export const SESSION_COOKIE = 'session';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-// The server enforces the 30-day idle expiry. The cookie lives as long as browsers allow,
+// The server enforces the 30-day idle expiry. The cookie lives as long as the session can,
 // so an active user isn't signed out 30 days after signing in.
-const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+const COOKIE_MAX_AGE_S = SESSION_MAX_MS / 1000;
 
 const cookieOptions = {
   httpOnly: true,

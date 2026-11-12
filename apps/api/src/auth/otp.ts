@@ -12,7 +12,7 @@ import type { Db, Tx } from '../db/client.ts';
 import { authCodes, users } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
 import { enqueueEmail, outboxKey } from '../mail/outbox.ts';
-import { SIGN_IN_CODE, signInCodeParams } from '../mail/templates.ts';
+import { DELETE_ACCOUNT_CODE, SIGN_IN_CODE, signInCodeParams } from '../mail/templates.ts';
 import { hit, rateLimitKey } from './rateLimit.ts';
 import { createSession } from './sessions.ts';
 
@@ -32,8 +32,19 @@ const VERIFIES_PER_HOUR_PER_IP = 60;
 
 type AuthDeps = { db: Db; clock: Clock; config: { authSecret: string } };
 
-function codeHmac(secret: string, email: string, code: string): string {
-  return hmacHex(secret, `sign-in-code:${email}\n${code}`);
+// What a mailed code is good for. A code works for the purpose it was requested for and no
+// other: signing in, or confirming that the signed-in user means to delete their account
+// (domain/departures.ts), which a session alone can't do.
+export type CodePurpose = 'sign_in' | 'delete_account';
+
+const PURPOSES = {
+  sign_in: { hmacLabel: 'sign-in-code', template: SIGN_IN_CODE },
+  delete_account: { hmacLabel: 'delete-account-code', template: DELETE_ACCOUNT_CODE },
+} as const;
+
+// The purpose is part of what is hashed, so a code for one purpose never matches another's.
+function codeHmac(secret: string, purpose: CodePurpose, email: string, code: string): string {
+  return hmacHex(secret, `${PURPOSES[purpose].hmacLabel}:${email}\n${code}`);
 }
 
 // Find-or-create in one statement, so known and unknown emails do the same work (and fall in
@@ -58,13 +69,15 @@ function newCode(): string {
 // Issues a code for `email`, queues it for mail, and returns the request token it works with.
 // Earlier codes for the email are left alone, so a request by someone else can't invalidate
 // the one its owner is about to enter. Neither the token nor anything else about the response
-// depends on whether the email has an account.
+// depends on whether the email has an account. Every purpose spends the same hourly caps,
+// which bound the mail an address can be sent.
 export async function requestCode(
   deps: AuthDeps,
-  input: { email: string; ip: string },
+  input: { email: string; ip: string; purpose?: CodePurpose },
 ): Promise<string> {
   const { db, clock, config } = deps;
   const now = clock.now();
+  const purpose = input.purpose ?? 'sign_in';
   for (const kind of ['ip', 'email'] as const) {
     const key = rateLimitKey(config.authSecret, kind, input[kind]);
     if (!(await hit(db, key, CODE_REQUESTS_PER_HOUR[kind], HOUR_MS, now))) {
@@ -81,14 +94,14 @@ export async function requestCode(
     await tx.insert(authCodes).values({
       email: input.email,
       requestTokenSha256: sha256Hex(requestToken),
-      codeHmac: codeHmac(config.authSecret, input.email, code),
+      codeHmac: codeHmac(config.authSecret, purpose, input.email, code),
       createdAt: now,
       expiresAt,
     });
     const userId = await findOrCreateUser(tx, input.email, now);
     await enqueueEmail(tx, {
       userId,
-      template: SIGN_IN_CODE,
+      template: PURPOSES[purpose].template,
       params: signInCodeParams(outboxKey(config.authSecret), code, expiresAt),
       now,
     });
@@ -96,10 +109,40 @@ export async function requestCode(
   return requestToken;
 }
 
-// Exchanges a code, and the token its request was answered with, for a new session. A code is
-// looked up by that token alone, so an attempt without it reaches no code and counts against
-// none. Wrong, expired, used, exhausted, and missing codes are indistinguishable to the caller,
-// as is a token that isn't the code's own.
+// Uses up the code that `requestToken` names, if `code` is the one mailed to `email` for
+// `purpose`. A code is looked up by its token alone, so an attempt without it reaches no code
+// and counts against none. The row lock serializes concurrent guesses, so every wrong one is
+// counted. Returns false for a wrong, expired, used, exhausted, or missing code, and for a
+// token that isn't the code's own; the caller must then commit, so the counted attempt stays.
+export async function redeemCode(
+  tx: Tx,
+  authSecret: string,
+  input: { email: string; code: string; requestToken: string; purpose: CodePurpose; now: Date },
+): Promise<boolean> {
+  const [row] = await tx
+    .select()
+    .from(authCodes)
+    .where(eq(authCodes.requestTokenSha256, sha256Hex(input.requestToken)))
+    .for('update');
+  if (!row || row.consumedAt || row.expiresAt <= input.now || row.attempts >= MAX_VERIFY_ATTEMPTS) {
+    return false;
+  }
+  // The HMAC covers the email and the purpose, so a code presented for another address, or
+  // for something it wasn't requested for, fails here too.
+  const candidate = codeHmac(authSecret, input.purpose, input.email, input.code);
+  if (row.email !== input.email || !hexEqual(candidate, row.codeHmac)) {
+    await tx
+      .update(authCodes)
+      .set({ attempts: sql`${authCodes.attempts} + 1` })
+      .where(eq(authCodes.id, row.id));
+    return false;
+  }
+  await tx.update(authCodes).set({ consumedAt: input.now }).where(eq(authCodes.id, row.id));
+  return true;
+}
+
+// Exchanges a code, and the token its request was answered with, for a new session. Every way
+// a code can fail looks the same to the caller.
 export async function verifyCode(
   deps: AuthDeps,
   input: { email: string; code: string; requestToken: string; client: SessionClient; ip: string },
@@ -111,28 +154,12 @@ export async function verifyCode(
   if (!(await hit(db, key, VERIFIES_PER_HOUR_PER_IP, HOUR_MS, now))) {
     throw new ApiError(429, 'RATE_LIMITED', 'Too many sign-in attempts. Try again later.');
   }
-  const candidate = codeHmac(config.authSecret, input.email, input.code);
 
-  // The row lock serializes concurrent guesses, so every wrong attempt is counted.
   const outcome = await db.transaction(async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(authCodes)
-      .where(eq(authCodes.requestTokenSha256, sha256Hex(input.requestToken)))
-      .for('update');
-    if (!row || row.consumedAt || row.expiresAt <= now || row.attempts >= MAX_VERIFY_ATTEMPTS) {
+    // Returned rather than thrown, so a counted attempt commits.
+    if (!(await redeemCode(tx, config.authSecret, { ...input, purpose: 'sign_in', now }))) {
       return null;
     }
-    // The HMAC covers the email, so a code presented for another address fails here too.
-    if (row.email !== input.email || !hexEqual(candidate, row.codeHmac)) {
-      // Returned rather than thrown, so the increment commits.
-      await tx
-        .update(authCodes)
-        .set({ attempts: sql`${authCodes.attempts} + 1` })
-        .where(eq(authCodes.id, row.id));
-      return null;
-    }
-    await tx.update(authCodes).set({ consumedAt: now }).where(eq(authCodes.id, row.id));
     const userId = await findOrCreateUser(tx, input.email, now);
     const token = await createSession(tx, { userId, client: input.client, now });
     return { user: { id: userId, email: input.email }, token };

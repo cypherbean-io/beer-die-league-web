@@ -1,7 +1,7 @@
 import type { MeResponse, MyMembership } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { browserStorage, clearAllDrafts } from '../drafts';
-import { getMe, logout } from './client';
+import { getMe, logout, logoutEverywhere } from './client';
 
 // Null when signed out.
 export function useMe() {
@@ -23,4 +23,13 @@ export function forgetSession(queryClient: ReturnType<typeof useQueryClient>): v
 export function useSignOut() {
   const queryClient = useQueryClient();
   return useMutation({ mutationFn: logout, onSuccess: () => forgetSession(queryClient) });
+}
+
+// Ends every session of mine, on every device, this one included.
+export function useSignOutEverywhere() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: logoutEverywhere,
+    onSuccess: () => forgetSession(queryClient),
+  });
 }

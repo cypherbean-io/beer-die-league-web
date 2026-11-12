@@ -57,8 +57,9 @@ There are no passwords. You sign in with a code sent to your email:
 - After five wrong tries, a code stops working, so request a new one. To change the
   email or get a new code, choose **Use a different email or resend**.
 - You can request up to five codes an hour for one email address.
-- You stay signed in on that browser until you sign out or go 30 days without using the
-  app.
+- You stay signed in on that browser until you sign out, go 30 days without using the
+  app, or reach 90 days since you signed in, whichever comes first. Then you sign in again
+  with a new code.
 
 ### Joining a league
 
@@ -386,6 +387,8 @@ On **Account**:
   corrected". For commissioners, it also turns the commissioner emails on or off (see
   [Emails](#emails)).
 - **Sign out:** signs this browser out and deletes any unsent game form saved on it.
+- **Sign out everywhere:** signs you out of every browser and device, this one included.
+  Use it if you lose a device or think someone else is signed in as you.
 
 ### Leaving the league
 
@@ -400,7 +403,13 @@ At the bottom of **Members**, choose **Leave league**, then confirm.
 
 ### Deleting your account
 
-At the bottom of **Account**, choose **Delete account**, then confirm.
+1. At the bottom of **Account**, choose **Delete account**. The app emails you a deletion
+   code. It's a different code from a sign-in code, and the email says so.
+2. Type in the code and choose **Delete my account**.
+
+Being signed in isn't enough to delete an account: it takes the emailed code as well. The
+code follows the same rules as a sign-in code (10 minutes, five tries, the page that asked
+for it), and counts toward the same five codes an hour.
 
 - Your email, sign-in sessions, and pending emails are erased, and you leave the league
   as described above.
@@ -544,13 +553,17 @@ The app sends these emails:
 | Subject | Sent to | When |
 | --- | --- | --- |
 | Your Beer Die League sign-in code | You | You ask for a sign-in code. |
+| Your Beer Die League account deletion code | You | You choose **Delete account**. |
 | A new game is waiting for your confirmation | The other players in the game | A player records a game. |
 | A corrected game is waiting for your confirmation | The other players in the game | A player corrects or reopens a game. |
 | A new member is awaiting approval | Commissioners | Someone asks to join. |
 | A game is waiting for commissioner review | Commissioners, other than the one who sent it | A player sends a game for review. |
 
 Game emails carry the player's name and a link, never scores. Turning off email
-notifications on **Account** stops every email except sign-in codes.
+notifications on **Account** stops every email except sign-in and deletion codes.
+
+If a deletion code arrives that you didn't ask for, don't enter it or pass it on. Someone
+else may be signed in as you: open **Account** and choose **Sign out everywhere**.
 
 ## Privacy
 

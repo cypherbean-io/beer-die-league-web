@@ -13,7 +13,7 @@ import { FixedClock } from '../src/clock.ts';
 import { memberships } from '../src/db/schema.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
 import { freshDatabase, resetTables } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import { type Caller, client, createLeague, deletionCode, signIn } from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 type SentMail = { to: Array<{ address: string }>; subject: string; text: string };
@@ -236,7 +236,7 @@ describe('PATCH /api/me', () => {
     const t = await basement();
     const deleted = await call('DELETE', '/api/me', {
       as: t.cy.caller,
-      body: { keepDisplayName: true },
+      body: { keepDisplayName: true, ...(await deletionCode(api, t.cy.caller)) },
     });
     expect(deleted.status).toBe(204);
 

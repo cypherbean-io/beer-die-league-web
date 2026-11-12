@@ -26,7 +26,14 @@ import { createSession } from '../src/auth/sessions.ts';
 import { FixedClock } from '../src/clock.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  type DeletionCode,
+  deletionCode,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 // The league is set up a day before the games are played and the accounts deleted.
@@ -40,7 +47,7 @@ let clock: FixedClock;
 let call: ReturnType<typeof client>;
 let sent: SentMail[];
 
-type SentMail = { to: Array<{ address: string }>; text: string };
+type SentMail = { to: Array<{ address: string }>; subject: string; text: string };
 
 // Real nodemailer JSON transport; every message it renders is captured.
 const jsonTransport = nodemailer.createTransport({ jsonTransport: true });
@@ -246,13 +253,45 @@ async function counted(s: Setup): Promise<Game> {
   return g;
 }
 
-function deleteAccount(as: Caller, body: unknown = { keepDisplayName: false }): Promise<Response> {
+// A deletion request with exactly this body.
+function deleteWith(as: Caller, body: unknown): Promise<Response> {
   return call('DELETE', '/api/me', { as, body });
+}
+
+// A deletion request as the app makes it: with a code mailed for the purpose, asked for now
+// unless the test already holds one.
+async function deleteAccount(
+  as: Caller,
+  opts: { keepDisplayName?: boolean; code?: DeletionCode } = {},
+): Promise<Response> {
+  const code = opts.code ?? (await deletionCode(api, as));
+  return deleteWith(as, { keepDisplayName: opts.keepDisplayName ?? false, ...code });
 }
 
 async function deleted(p: Player, keepDisplayName = false): Promise<void> {
   const res = await deleteAccount(p.caller, { keepDisplayName });
   expect(res.status).toBe(204);
+}
+
+// The same code with one character changed: well-formed, but not the one mailed.
+function wrong(issued: DeletionCode): DeletionCode {
+  const last = issued.code.at(-1) === '2' ? '3' : '2';
+  return { ...issued, code: issued.code.slice(0, -1) + last };
+}
+
+function drain() {
+  return drainOutbox({
+    db: api.db,
+    clock,
+    transport: capturingTransport,
+    mailFrom: 'Beer Die League <league@app.test>',
+    authSecret: api.authSecret,
+    log: (entry) => api.logs.push(entry),
+  });
+}
+
+function requestDeletionCode(as?: Caller): Promise<Response> {
+  return call('POST', '/api/me/deletion-code', { as, body: {} });
 }
 
 function getMe(as: Caller): Promise<Response> {
@@ -387,6 +426,7 @@ describe('deleting an account', () => {
     const token = await api.db.transaction((tx) =>
       createSession(tx, { userId: s.bo.caller.userId, client: 'web', now: clock.now() }),
     );
+    const code = await deletionCode(api, s.bo.caller);
 
     const res = await fetch(`${api.baseUrl}/api/me`, {
       method: 'DELETE',
@@ -395,7 +435,7 @@ describe('deleting an account', () => {
         origin: APP_ORIGIN,
         cookie: `session=${token}`,
       },
-      body: JSON.stringify({ keepDisplayName: false }),
+      body: JSON.stringify({ keepDisplayName: false, ...code }),
     });
 
     expect(res.status).toBe(204);
@@ -622,9 +662,30 @@ describe('a commissioner deleting their account', () => {
 describe('the deletion request', () => {
   it('rejects a body without keepDisplayName, or with unknown fields, with 422', async () => {
     const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
 
-    for (const body of [{}, { keepDisplayName: 'yes' }, { keepDisplayName: true, extra: 1 }]) {
-      const res = await deleteAccount(s.bo.caller, body);
+    for (const body of [
+      code,
+      { ...code, keepDisplayName: 'yes' },
+      { ...code, keepDisplayName: true, extra: 1 },
+    ]) {
+      const res = await deleteWith(s.bo.caller, body);
+      expect(res.status).toBe(422);
+      expect(await errorCode(res)).toBe('VALIDATION');
+    }
+    expect((await getMe(s.bo.caller)).status).toBe(200);
+  });
+
+  it('rejects a body without a code or without its request token with 422', async () => {
+    const s = await setup();
+    const { code, requestToken } = await deletionCode(api, s.bo.caller);
+
+    for (const body of [
+      { keepDisplayName: false },
+      { keepDisplayName: false, code },
+      { keepDisplayName: false, requestToken },
+    ]) {
+      const res = await deleteWith(s.bo.caller, body);
       expect(res.status).toBe(422);
       expect(await errorCode(res)).toBe('VALIDATION');
     }
@@ -632,9 +693,172 @@ describe('the deletion request', () => {
   });
 
   it('requires a session', async () => {
-    const res = await call('DELETE', '/api/me', { body: { keepDisplayName: false } });
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+
+    const res = await call('DELETE', '/api/me', { body: { keepDisplayName: false, ...code } });
 
     expect(res.status).toBe(401);
+    expect((await getMe(s.bo.caller)).status).toBe(200);
+  });
+});
+
+describe('the deletion code', () => {
+  it('is mailed to the account, saying that it deletes the account', async () => {
+    const s = await setup();
+
+    const res = await requestDeletionCode(s.bo.caller);
+    await drain();
+
+    expect(res.status).toBe(202);
+    const mail = sent.findLast((m) => m.to[0]?.address === 'bo@example.com');
+    expect(mail?.subject).toBe('Your Beer Die League account deletion code');
+    expect(mail?.text).toMatch(
+      /code to delete your Beer Die League account is [0-9A-Z]{4}-[0-9A-Z]{4}\./,
+    );
+  });
+
+  it('as mailed, deletes the account when sent with its request token', async () => {
+    const s = await setup();
+    const requested = await requestDeletionCode(s.bo.caller);
+    const { requestToken } = RequestCodeResponse.parse(await requested.json());
+    await drain();
+    const code = sent
+      .findLast((m) => m.to[0]?.address === 'bo@example.com')!
+      .text.match(/\b([0-9A-Z]{4}-[0-9A-Z]{4})\b/)![1]!;
+
+    const res = await deleteWith(s.bo.caller, { keepDisplayName: false, code, requestToken });
+
+    expect(res.status).toBe(204);
+    expect((await userRow(s.bo.caller.userId)).email).toBeNull();
+  });
+
+  it('cannot be requested without a session', async () => {
+    const res = await requestDeletionCode();
+
+    expect(res.status).toBe(401);
+  });
+
+  it('counts against the hourly cap on codes mailed to the address', async () => {
+    const s = await setup();
+    for (let i = 0; i < 5; i++) expect((await requestDeletionCode(s.bo.caller)).status).toBe(202);
+
+    const res = await requestDeletionCode(s.bo.caller);
+
+    expect(res.status).toBe(429);
+    expect(await errorCode(res)).toBe('RATE_LIMITED');
+  });
+
+  it('refuses a wrong code with 403 INVALID_CODE and deletes nothing', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+
+    const res = await deleteAccount(s.bo.caller, { code: wrong(code) });
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe('INVALID_CODE');
+    expect((await userRow(s.bo.caller.userId)).email).toBe('bo@example.com');
+    expect((await getMe(s.bo.caller)).status).toBe(200);
+  });
+
+  it('still works after four wrong attempts', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+    for (let i = 0; i < 4; i++) await deleteAccount(s.bo.caller, { code: wrong(code) });
+
+    const res = await deleteAccount(s.bo.caller, { code });
+
+    expect(res.status).toBe(204);
+  });
+
+  it('is invalidated by the 5th wrong attempt', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+    for (let i = 0; i < 5; i++) await deleteAccount(s.bo.caller, { code: wrong(code) });
+
+    const res = await deleteAccount(s.bo.caller, { code });
+
+    expect(res.status).toBe(403);
+    expect((await getMe(s.bo.caller)).status).toBe(200);
+  });
+
+  it('is refused at its 10-minute TTL + 1 s', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+    clock.advance(10 * 60 * 1000 + 1000);
+
+    const res = await deleteAccount(s.bo.caller, { code });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('is refused with a request token that is not its own', async () => {
+    const s = await setup();
+    const first = await deletionCode(api, s.bo.caller);
+    const second = await deletionCode(api, s.bo.caller);
+
+    const res = await deleteAccount(s.bo.caller, {
+      code: { code: first.code, requestToken: second.requestToken },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("is refused for another user's account", async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+
+    const res = await deleteAccount(s.cy.caller, { code });
+
+    expect(res.status).toBe(403);
+    expect((await userRow(s.cy.caller.userId)).email).toBe('cy@example.com');
+  });
+
+  it('cannot be replaced by a sign-in code for the same address', async () => {
+    const s = await setup();
+    const signInCode = await mailedCode('bo@example.com');
+
+    const res = await deleteAccount(s.bo.caller, { code: signInCode });
+
+    expect(res.status).toBe(403);
+    expect((await userRow(s.bo.caller.userId)).email).toBe('bo@example.com');
+  });
+
+  it('cannot be used to sign in', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+
+    const res = await verify('bo@example.com', code);
+
+    expect(res.status).toBe(401);
+  });
+
+  it('stays usable when the deletion is refused for the last commissioner', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.ana.caller);
+    expect(await errorCode(await deleteAccount(s.ana.caller, { code }))).toBe('LAST_COMMISSIONER');
+    const promoted = await call(
+      'POST',
+      `/api/leagues/${s.leagueId}/members/${s.bo.membershipId}/role`,
+      { as: s.commissioner, body: { role: 'commissioner' } },
+    );
+    expect(promoted.status).toBe(200);
+
+    const res = await deleteAccount(s.ana.caller, { code });
+
+    expect(res.status).toBe(204);
+  });
+
+  it('is never logged, nor is its request token', async () => {
+    const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
+
+    await deleteAccount(s.bo.caller, { code });
+
+    const logged = JSON.stringify(api.logs);
+    expect(logged).not.toContain(code.code);
+    expect(logged).not.toContain(code.requestToken);
+    expect(logged).not.toContain('bo@example.com');
   });
 });
 
@@ -643,6 +867,7 @@ describe('deletion racing other writes', () => {
     const s = await setup();
     const zed = await signIn(api.db, clock, 'zed@example.com');
     const token = await inviteToken(s);
+    const code = await deletionCode(api, zed);
 
     let joining: Promise<Response> | undefined;
     let deleting: Promise<Response> | undefined;
@@ -651,7 +876,7 @@ describe('deletion racing other writes', () => {
       await tx.execute(sql`select 1 from leagues where id = ${s.leagueId} for update`);
       joining = join(token, zed, 'Zed');
       await waitForLockWaiters(api.db, 1);
-      deleting = deleteAccount(zed);
+      deleting = deleteAccount(zed, { code });
       await waitForLockWaiters(api.db, 2);
     });
 
@@ -666,13 +891,14 @@ describe('deletion racing other writes', () => {
     const s = await setup();
     const other = await bootstrap('zoe@example.com', 'Zoe');
     const token = await inviteToken(other);
+    const code = await deletionCode(api, s.bo.caller);
 
     let deleting: Promise<Response> | undefined;
     let joining: Promise<Response> | undefined;
     await api.db.transaction(async (tx) => {
       // The deletion has marked Bo's account and waits on his membership.
       await tx.execute(sql`select 1 from memberships where id = ${s.bo.membershipId} for update`);
-      deleting = deleteAccount(s.bo.caller);
+      deleting = deleteAccount(s.bo.caller, { code });
       await waitForLockWaiters(api.db, 1);
       joining = join(token, s.bo.caller, 'Bo');
       await waitForLockWaiters(api.db, 2);
@@ -688,6 +914,7 @@ describe('deletion racing other writes', () => {
 
   it('waits for a game submission that mails them, then voids the game and the mail', async () => {
     const s = await setup();
+    const code = await deletionCode(api, s.bo.caller);
 
     let submitting: Promise<Response> | undefined;
     let deleting: Promise<Response> | undefined;
@@ -697,7 +924,7 @@ describe('deletion racing other writes', () => {
       await tx.execute(sql`select 1 from memberships where id = ${s.di.membershipId} for update`);
       submitting = submit(s, s.cy, exhibition(s));
       await waitForLockWaiters(api.db, 1);
-      deleting = deleteAccount(s.bo.caller);
+      deleting = deleteAccount(s.bo.caller, { code });
       await waitForLockWaiters(api.db, 2);
     });
 
@@ -721,6 +948,7 @@ describe('deletion racing other writes', () => {
     expect(code.status).toBe(202);
     const zed = await signIn(api.db, clock, 'zed@example.com');
     const token = await inviteToken(s);
+    const deletion = await deletionCode(api, s.bo.caller);
 
     let deleting: Promise<Response> | undefined;
     let joining: Promise<Response> | undefined;
@@ -730,7 +958,7 @@ describe('deletion racing other writes', () => {
       await tx.execute(
         sql`select 1 from email_outbox where user_id = ${s.bo.caller.userId} for update`,
       );
-      deleting = deleteAccount(s.bo.caller);
+      deleting = deleteAccount(s.bo.caller, { code: deletion });
       await waitForLockWaiters(api.db, 1);
       joining = join(token, zed, 'Zed');
       await waitForLockWaiters(api.db, 2);
@@ -753,6 +981,7 @@ describe('deletion racing other writes', () => {
   it('lets a sign-in in flight finish as a new, unlinked user', async () => {
     const s = await setup();
     const code = await mailedCode('bo@example.com');
+    const deletion = await deletionCode(api, s.bo.caller);
 
     let deleting: Promise<Response> | undefined;
     let verifying: Promise<Response> | undefined;
@@ -760,7 +989,7 @@ describe('deletion racing other writes', () => {
       // The deletion has marked Bo's account and waits on his membership; the sign-in holds
       // his code and waits on his account.
       await tx.execute(sql`select 1 from memberships where id = ${s.bo.membershipId} for update`);
-      deleting = deleteAccount(s.bo.caller);
+      deleting = deleteAccount(s.bo.caller, { code: deletion });
       await waitForLockWaiters(api.db, 1);
       verifying = verify('bo@example.com', code);
       await waitForLockWaiters(api.db, 2);
