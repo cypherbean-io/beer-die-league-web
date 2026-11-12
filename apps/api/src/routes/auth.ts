@@ -5,9 +5,7 @@ import {
   VerifyCodeBody,
   type VerifyCodeResponse,
 } from '@beer-die/core';
-import { isIP } from 'node:net';
-import { getConnInfo } from '@hono/node-server/conninfo';
-import { type Context, Hono } from 'hono';
+import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
 import {
   type AuthEnv,
@@ -15,21 +13,10 @@ import {
   requireSession,
   setSessionCookie,
 } from '../auth/middleware.ts';
+import { clientIp } from '../auth/clientIp.ts';
 import { requestCode, verifyCode } from '../auth/otp.ts';
-import { rateLimitAddress } from '../auth/rateLimit.ts';
 import { revokeSession } from '../auth/sessions.ts';
 import { readJson } from '../http.ts';
-
-// The socket peer, or behind a trusted proxy the address it appended to X-Forwarded-For,
-// as the per-address limits count it. Only the last entry is the proxy's; any before it
-// came from the client.
-function clientIp(c: Context, trustProxy: boolean): string {
-  const forwarded = trustProxy
-    ? c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim()
-    : undefined;
-  const address = forwarded && isIP(forwarded) ? forwarded : getConnInfo(c).remote.address;
-  return address ? rateLimitAddress(address) : 'unknown';
-}
 
 export function authRoutes(deps: AppDeps) {
   return new Hono<AuthEnv>()

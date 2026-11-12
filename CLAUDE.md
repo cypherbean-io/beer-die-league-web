@@ -119,6 +119,7 @@ Prefer running a single test file over the whole suite while iterating.
   | `422` | `RULES_VIOLATION`: rule-check failures, overridable by a commissioner |
   | `409` | Stale revision, closed window, or idempotency mismatch |
   | `413` | Request body over 16 KB |
+  | `429` | `RATE_LIMITED`: an hourly limit in `rate_limits`, or the in-memory throttle (`auth/throttle.ts`) |
 
 - **Email.** All email goes through `email_outbox`, drained by the worker. Never send
   mail inside a request or a transaction. Emails never contain stats or tokens.

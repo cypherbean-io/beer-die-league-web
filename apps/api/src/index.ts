@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
+import { createThrottle } from './auth/throttle.ts';
 import { systemClock } from './clock.ts';
 import { loadConfig } from './config.ts';
 import { createDb } from './db/client.ts';
@@ -9,7 +10,13 @@ const PORT = 3000;
 
 const config = loadConfig(process.env);
 const { db } = createDb(config.databaseUrl);
-const app = createApp({ db, clock: systemClock, config, log: stdoutLog });
+const app = createApp({
+  db,
+  clock: systemClock,
+  config,
+  log: stdoutLog,
+  throttle: createThrottle(),
+});
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {
   stdoutLog({ level: 'info', msg: 'api listening', port: info.port });

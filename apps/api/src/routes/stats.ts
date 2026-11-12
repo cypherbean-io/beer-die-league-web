@@ -7,14 +7,16 @@ import {
 } from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
-import type { LeagueEnv } from '../auth/middleware.ts';
+import { type LeagueEnv, throttleUser } from '../auth/middleware.ts';
 import { idParam, readQuery } from '../http.ts';
 import { getPlayerStats, listPartnershipStats, listPlayerStats } from '../stats/queries.ts';
 
 // Mounted inside leagueRoutes, which has already resolved the caller's membership. Every
-// member may read the stats.
+// member may read the stats. Each read aggregates over the league's games, so they have a
+// limit of their own (shared with standings).
 export function statsRoutes(deps: AppDeps) {
   return new Hono<LeagueEnv>()
+    .use('/stats/*', throttleUser(deps, 'stats-user'))
     .get('/stats/players', async (c) => {
       const { scope } = readQuery(c, PlayerStatsQuery);
       const players = await listPlayerStats(deps.db, c.get('membership')!, scope);

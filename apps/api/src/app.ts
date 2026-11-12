@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { routePath } from 'hono/route';
-import { type AuthEnv, csrfGuard } from './auth/middleware.ts';
+import { type AuthEnv, csrfGuard, throttleAddress } from './auth/middleware.ts';
+import type { Throttle } from './auth/throttle.ts';
 import type { Clock } from './clock.ts';
 import type { Db } from './db/client.ts';
 import { ApiError, errorBody } from './http.ts';
@@ -18,6 +19,7 @@ export type AppDeps = {
   clock: Clock;
   config: { authSecret: string; appOrigin: string; trustProxy: boolean };
   log: Log;
+  throttle: Throttle;
 };
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -45,6 +47,9 @@ export function createApp(deps: AppDeps) {
       userId: c.get('auth')?.userId,
     });
   });
+  // Before the body is read or the database touched: a refused request costs neither.
+  app.use('*', throttleAddress(deps, 'ip'));
+  app.use('/auth/*', throttleAddress(deps, 'auth-ip'));
   app.use(
     '*',
     bodyLimit({

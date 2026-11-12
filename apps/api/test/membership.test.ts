@@ -17,6 +17,7 @@ import { sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.ts';
+import { createThrottle } from '../src/auth/throttle.ts';
 import { FixedClock } from '../src/clock.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
@@ -1087,6 +1088,7 @@ describe('tenancy', () => {
       clock,
       config: { authSecret: api.authSecret, appOrigin: APP_ORIGIN, trustProxy: false },
       log: () => {},
+      throttle: createThrottle(),
     });
 
     const registered = app.routes

@@ -105,7 +105,7 @@ apps/api/                 Hono HTTP API + worker + CLI (Node 26, runs .ts via bu
   src/cli.ts              create-league, promote-commissioner (bootstrap only)
   src/clock.ts            Clock interface; real + fixed implementations
   src/db/schema.ts        Drizzle schema; src/db/migrations/ (drizzle-kit, committed SQL)
-  src/auth/               otp.ts, sessions.ts, middleware.ts, rateLimit.ts
+  src/auth/               otp.ts, sessions.ts, middleware.ts, rateLimit.ts, throttle.ts
   src/domain/             games.ts (state machine; THE invariant), seasons.ts, teams.ts,
                           membership.ts, deletion.ts, audit.ts
   src/stats/queries.ts    SQL aggregation over counted results
@@ -485,6 +485,24 @@ All groups after Invites are under `/api/leagues/:id`.
   attempts per hour per IP. There is no verify limit per email, which anyone could fill
   for someone else's address. IPs are stored only as an HMAC.
 
+**Request throttling**
+
+- In front of every route, counted in the API process's memory, so a refused request
+  costs no database work and no body is read for it:
+
+  | Counted per | Requests a minute |
+  | --- | --- |
+  | Address, everything | 1200 |
+  | Address, `/api/auth/*` | 30 |
+  | Signed-in user, everything | 300 |
+  | Signed-in user, stats and standings reads | 60 |
+
+- A refusal is `429 RATE_LIMITED` with a `Retry-After` header. Addresses are counted as
+  the hourly limits count them (an IPv6 /64 is one client) and keyed by an HMAC.
+- These limits bound how fast one client can drive the API. The limits that must hold
+  exactly (codes, joins, game writes) stay in `rate_limits`.
+- The counters are per API process, and v1 runs one. They reset when it restarts.
+
 **Sessions**
 
 - 32 random bytes, encoded base64url; only their SHA-256 is stored.
@@ -577,6 +595,7 @@ There is no date of birth, no location, and no payment data.
 | Duplicate or replayed submissions | Idempotency key plus a payload hash |
 | Race conditions | Game row lock; one transition function |
 | Large or malformed payloads | 16 KB body limit; zod schemas with strict integer bounds |
+| Request floods | In-memory throttling per address and per user, applied before the body is read or the database touched; stricter for `/api/auth/*` and for stats reads. **Residual:** it is per address, so it doesn't stop a flood from many addresses. |
 
 **Logging and redaction**
 
@@ -680,6 +699,10 @@ sinks don't end the game):
 - Wrong attempts without a code's request token don't count against it, and the right
   code with another request's token is refused.
 - The 6th code request in an hour gets `429`.
+- The 31st request to `/api/auth/*` in a minute from one address gets `429` with
+  `Retry-After`, and writes nothing to the database.
+- A user's requests past the per-user limit, and stats reads past the stats limit, get
+  `429`; other users and other routes are unaffected.
 - Logout revokes the session.
 - The web cookie is httpOnly, Secure, and SameSite=Lax.
 - A cookie-authenticated write with a foreign or missing `Origin` gets `403`.
