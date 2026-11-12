@@ -111,15 +111,22 @@ export async function listGameAudit(tx: Tx, actor: Actor, gameId: string): Promi
   return nameAuditRows(tx, actor, rows.reverse());
 }
 
+// The actions whose target is the member the entry names.
+const MEMBER_ACTIONS: ReadonlySet<string> = new Set([
+  'member.removed',
+  'member.approved',
+  'member.role_changed',
+] satisfies Array<AuditEvent['action']>);
+
 async function nameAuditRows(tx: Tx, actor: Actor, page: AuditRow[]): Promise<AuditEvent[]> {
-  // A forced confirmation names the player it was for, a removal the member removed, and a
-  // roster change the players before and after. Names are looked up now, not stored, so the log
-  // shows a renamed or anonymized member as they are today.
+  // A forced confirmation names the player it was for, a removal, approval, or role change the
+  // member it was about, and a roster change the players before and after. Names are looked up
+  // now, not stored, so the log shows a renamed or anonymized member as they are today.
   const playerIdOf = new Map(
     page.flatMap((row) =>
       row.action === 'game.confirmation_forced'
         ? [[row.id, ForcedConfirmationDetails.parse(row.details).membershipId] as const]
-        : row.action === 'member.removed'
+        : MEMBER_ACTIONS.has(row.action)
           ? [[row.id, row.targetId] as const]
           : [],
     ),

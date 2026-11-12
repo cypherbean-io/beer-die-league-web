@@ -15,7 +15,7 @@ export function memberRoutes(deps: AppDeps) {
     })
     .post('/members/:mid/approve', async (c) => {
       await readJson(c, EmptyBody);
-      const member = await approveMember(deps.db, c.get('membership')!, idParam(c, 'mid'));
+      const member = await approveMember(deps, c.get('membership')!, idParam(c, 'mid'));
       return c.json({ member } satisfies MemberResponse);
     })
     .post('/members/:mid/reject', async (c) => {
@@ -25,7 +25,7 @@ export function memberRoutes(deps: AppDeps) {
     })
     .post('/members/:mid/role', async (c) => {
       const { role } = await readJson(c, RoleBody);
-      const member = await setRole(deps.db, c.get('membership')!, idParam(c, 'mid'), role);
+      const member = await setRole(deps, c.get('membership')!, idParam(c, 'mid'), role);
       return c.json({ member } satisfies MemberResponse);
     })
     .post('/members/:mid/remove', async (c) => {

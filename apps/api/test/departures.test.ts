@@ -27,7 +27,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { FixedClock } from '../src/clock.ts';
 import { sweepExpired } from '../src/domain/games.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  fromMembershipSetup,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -406,10 +412,12 @@ async function gameDetail(l: League, gameId: string) {
 const marks = (players: Array<{ displayName: string; former: boolean }>) =>
   players.map((p) => [p.displayName, p.former]);
 
+// Without the entries setup wrote to build the fixture (see fromMembershipSetup).
 async function auditLog(l: League, as: Caller = l.commissioner) {
   const res = await call('GET', `/api/leagues/${l.leagueId}/audit`, { as });
   expect(res.status).toBe(200);
-  return AuditResponse.parse(await res.json()).events;
+  const { events } = AuditResponse.parse(await res.json());
+  return events.filter((e) => !fromMembershipSetup(e));
 }
 
 async function teams(l: League, seasonId: string): Promise<Team[]> {

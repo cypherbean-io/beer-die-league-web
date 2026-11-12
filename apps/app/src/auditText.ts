@@ -88,6 +88,20 @@ export function describeEvent(event: AuditEvent): { summary: string; lines: stri
             : [`Voided ${voided} game${voided === 1 ? '' : 's'} awaiting confirmation`],
       };
     }
+    case 'member.approved':
+      return { summary: `approved ${event.player.displayName} to join the league`, lines: [] };
+    case 'member.role_changed': {
+      const role = event.details.after === 'commissioner' ? 'a commissioner' : 'a member';
+      // A commissioner can change their own role only by giving it up.
+      const own = event.player.membershipId === event.actor.membershipId;
+      return {
+        summary:
+          own && event.details.after === 'member'
+            ? 'stepped down as commissioner'
+            : `made ${event.player.displayName} ${role}`,
+        lines: [],
+      };
+    }
   }
 }
 

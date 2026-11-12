@@ -18,7 +18,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { FixedClock } from '../src/clock.ts';
 import { TEAM_PROPOSALS_PER_HOUR, TEAM_PROPOSALS_PER_SEASON } from '../src/domain/teams.ts';
 import { freshDatabase, resetTables } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  fromMembershipSetup,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -245,10 +251,12 @@ async function listTeams(l: League, seasonId: string, as: Caller = l.commissione
   return TeamsResponse.parse(await res.json()).teams;
 }
 
+// Without the entries setup wrote to build the fixture (see fromMembershipSetup).
 async function auditLog(l: League, as: Caller = l.commissioner) {
   const res = await call('GET', `/api/leagues/${l.leagueId}/audit`, { as });
   expect(res.status).toBe(200);
-  return AuditResponse.parse(await res.json()).events;
+  const { events } = AuditResponse.parse(await res.json());
+  return events.filter((e) => !fromMembershipSetup(e));
 }
 
 // A player as the audit log names them, and as a team lists them.

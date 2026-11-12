@@ -15,10 +15,37 @@ import {
   RosterBody,
   RulesBody,
   SettingsBody,
+  SignInCode,
   StandingsConfig,
   StandingsConfigBody,
   SubmitGameBody,
 } from './schemas.ts';
+
+describe('SignInCode', () => {
+  it.each([
+    ['as mailed', 'AB12-CD34'],
+    ['without the hyphen', 'AB12CD34'],
+    ['in lower case', 'ab12-cd34'],
+    ['with spaces around and inside', ' AB12 CD34 '],
+  ])('reads a code typed %s as the code that was sent', (_, typed) => {
+    expect(SignInCode.parse(typed)).toBe('AB12CD34');
+  });
+
+  it('reads the letters the alphabet leaves out as the digits they look like', () => {
+    expect(SignInCode.parse('OIL0-oil1')).toBe('01100111');
+  });
+
+  it.each([
+    ['seven characters', 'AB12-CD3'],
+    ['nine characters', 'AB12-CD345'],
+    ['the old six digits', '123456'],
+    ['a letter outside the alphabet', 'AB12-CD3U'],
+    ['punctuation', 'AB12_CD34'],
+    ['nothing', ''],
+  ])('rejects %s', (_, typed) => {
+    expect(SignInCode.safeParse(typed).success).toBe(false);
+  });
+});
 
 const accepts = (raw: string) => DisplayName.safeParse(raw).success;
 

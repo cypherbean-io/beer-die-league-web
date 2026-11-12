@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
+  AuditResponse,
   CreateInviteResponse,
   ErrorBody,
   GameResponse,
@@ -147,6 +148,12 @@ async function members(l: League, as: Caller) {
   const res = await call('GET', `/api/leagues/${l.leagueId}/members`, { as });
   expect(res.status).toBe(200);
   return MembersResponse.parse(await res.json()).members;
+}
+
+async function auditLog(l: League, as: Caller = l.commissioner) {
+  const res = await call('GET', `/api/leagues/${l.leagueId}/audit`, { as });
+  expect(res.status).toBe(200);
+  return AuditResponse.parse(await res.json()).events;
 }
 
 describe('league bootstrap', () => {
@@ -380,6 +387,62 @@ describe('joining and approval', () => {
     });
     expect((await call('GET', `/api/leagues/${l.leagueId}`, { as: bo })).status).toBe(200);
     expect((await me(bo)).memberships).toMatchObject([{ status: 'approved' }]);
+  });
+
+  it('logs an approval, naming the commissioner and the member let in', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+
+    expect(await auditLog(l)).toMatchObject([
+      {
+        action: 'member.approved',
+        targetType: 'membership',
+        targetId: bo.membershipId,
+        actor: { membershipId: l.commissionerMembershipId, displayName: 'Ana' },
+        player: { membershipId: bo.membershipId, displayName: 'Bo' },
+        actorWasParticipant: false,
+        details: {},
+      },
+    ]);
+  });
+
+  it('logs nothing when an approval is refused', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+
+    await call('POST', `/api/leagues/${l.leagueId}/members/${bo.membershipId}/approve`, {
+      as: l.commissioner,
+      body: {},
+    });
+
+    const log = await auditLog(l);
+    expect(log.filter((e) => e.action === 'member.approved')).toHaveLength(1);
+  });
+
+  it('refuses an approval from a commissioner demoted while the request waited', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+    await setRole(l, l.commissioner, bo.membershipId, 'commissioner');
+    const { token } = await invite(l);
+    const cy = await joined(token, await signIn(api.db, clock, 'cy@example.com'), 'Cy');
+
+    // Bo's request is authorized while the demotion is still uncommitted, then waits on the
+    // league row. Once the demotion commits, the role it re-reads is no longer commissioner.
+    let approval: Promise<Response> | undefined;
+    await api.db.transaction(async (tx) => {
+      await tx.execute(sql`select id from leagues where id = ${l.leagueId} for update`);
+      await tx.execute(sql`update memberships set role = 'member' where id = ${bo.membershipId}`);
+      approval = call('POST', `/api/leagues/${l.leagueId}/members/${cy}/approve`, {
+        as: bo.caller,
+        body: {},
+      });
+      await waitForLockWaiters(api.db, 1);
+    });
+
+    expect((await approval!).status).toBe(403);
+    const pending = (await members(l, l.commissioner)).find((m) => m.id === cy);
+    expect(pending?.status).toBe('pending');
+    expect((await auditLog(l)).filter((e) => e.targetId === cy)).toEqual([]);
   });
 
   it('refuses to approve a member who is not pending', async () => {
@@ -626,6 +689,63 @@ describe('roles', () => {
     const list = await members(l, l.commissioner);
     expect(list.filter((m) => m.role === 'commissioner')).toHaveLength(1);
     expect(statuses).toEqual([200, 403]);
+  });
+
+  it('logs a promotion with the role before and after', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+
+    await setRole(l, l.commissioner, bo.membershipId, 'commissioner');
+
+    const changes = (await auditLog(l)).filter((e) => e.action === 'member.role_changed');
+    expect(changes).toMatchObject([
+      {
+        action: 'member.role_changed',
+        targetType: 'membership',
+        targetId: bo.membershipId,
+        actor: { membershipId: l.commissionerMembershipId, displayName: 'Ana' },
+        player: { membershipId: bo.membershipId, displayName: 'Bo' },
+        actorWasParticipant: false,
+        details: { before: 'member', after: 'commissioner' },
+      },
+    ]);
+  });
+
+  it('logs a commissioner stepping down as a change to their own role', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+    await setRole(l, l.commissioner, bo.membershipId, 'commissioner');
+
+    await setRole(l, l.commissioner, l.commissionerMembershipId, 'member');
+
+    // Newest first; every member may read the log.
+    const [latest] = await auditLog(l, bo.caller);
+    expect(latest).toMatchObject({
+      action: 'member.role_changed',
+      targetId: l.commissionerMembershipId,
+      actor: { membershipId: l.commissionerMembershipId },
+      player: { membershipId: l.commissionerMembershipId, displayName: 'Ana' },
+      details: { before: 'commissioner', after: 'member' },
+    });
+  });
+
+  it('logs nothing when a member is given the role they already have', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+    const bo = await member(l, 'bo@example.com', 'Bo');
+
+    const res = await setRole(l, l.commissioner, bo.membershipId, 'member');
+
+    expect(res.status).toBe(200);
+    const log = await auditLog(l);
+    expect(log.filter((e) => e.action === 'member.role_changed')).toEqual([]);
+  });
+
+  it('logs nothing when demoting the last commissioner is refused', async () => {
+    const l = await league('Basement League', 'ana@example.com', 'Ana');
+
+    await setRole(l, l.commissioner, l.commissionerMembershipId, 'member');
+
+    expect(await auditLog(l)).toEqual([]);
   });
 
   it('refuses to change the role of a pending member', async () => {

@@ -64,7 +64,8 @@ once, and that line counts only after the players confirm it.
   idempotency key prevents duplicate games.
 - **Account deletion** inside the app. The account is anonymized and its games are kept,
   with an option to keep the display name on historical games.
-- An append-only audit log of commissioner actions, visible to all members.
+- An append-only audit log of commissioner actions, visible to all members. It includes
+  approving a member and changing a role, since both decide who can act in the league.
 - Docker Compose for local dev, tests, and production on a single VPS: Caddy for TLS and
   static web, Postgres, the API, a worker, and nightly backups.
 
@@ -170,7 +171,7 @@ Anything else needs the user to approve it first.
 | Table | Key columns / constraints |
 | --- | --- |
 | `users` | `email citext unique null` (null after deletion), `created_at`, `deleted_at` |
-| `auth_codes` | `email`, `code_hmac`, `expires_at`, `attempts`, `consumed_at`. Requesting a new code invalidates the email's earlier codes. |
+| `auth_codes` | `email`, `request_token_sha256 unique`, `code_hmac`, `expires_at`, `attempts`, `consumed_at`. One row per code request, found by its request token, never by email; a new request leaves the email's earlier codes alone. |
 | `sessions` | `user_id`, `token_sha256 unique`, `client ('web'\|'native')`, `last_used_at`, `expires_at` (30 days after last use) |
 | `rate_limits` | `key` (`email:<hmac>` or `ip:<hmac>`), `window_start`, `count` |
 | `leagues` | `name`, rules (`target_score` ≥1 default 11, `win_by` ≥1 default 2, `sink_points` ≥0 default 0, `sink_ends_game` default false), `confirmation_window_days` 1–30 default 7, `exhibition_correction_window_days` 0–365 default 30 |
@@ -432,7 +433,7 @@ All groups after Invites are under `/api/leagues/:id`.
 
 **UI (Expo Router, mobile-first)**
 
-- **Sign in:** email, then a 6-digit code.
+- **Sign in:** email, then the 8-character code, in the same browser or app.
 - **Join:** enter a display name, then wait on an "awaiting approval" screen.
 - **Home:** inbox badge, standings snapshot, and a "Record game" button.
 - **Record game:**
@@ -467,13 +468,22 @@ All groups after Invites are under `/api/leagues/:id`.
 
 **Codes**
 
-- 6 digits from `crypto.randomInt`.
+- 8 characters of Crockford base32 (40 bits) from `crypto.randomInt`, mailed as
+  `ABCD-EFGH`. Typed codes are read without regard to case, spaces, or hyphens, with `O`
+  as `0` and `I` or `L` as `1`.
 - Stored as `HMAC-SHA256(AUTH_SECRET, email ‖ code)` and compared in constant time.
 - 10-minute TTL, single use, and at most 5 verify attempts before the code is
   invalidated.
-- Limits: 5 code requests per hour per email, and 20 per hour per IP. IPs are stored
-  only as an HMAC.
-- `POST /auth/code` always returns `202`.
+- **Bound to its request.** `POST /auth/code` always returns `202 { requestToken }`: 32
+  random bytes, of which only the SHA-256 is stored. `POST /auth/verify` takes
+  `{ email, code, requestToken, client }` and finds the code by the token alone. An
+  attempt without a code's own token reaches no code and counts against none, so only
+  whoever asked for a code can use up its attempts, and a later request for the same
+  email doesn't invalidate it. Web and native use the same mechanism; the web app keeps
+  the token in memory.
+- Limits: 5 code requests per hour per email, and 20 per hour per IP; 60 verify
+  attempts per hour per IP. There is no verify limit per email, which anyone could fill
+  for someone else's address. IPs are stored only as an HMAC.
 
 **Sessions**
 
@@ -555,13 +565,14 @@ There is no date of birth, no location, and no payment data.
 | Threat | Mitigation |
 | --- | --- |
 | Account enumeration | `/auth/code` always returns `202` with the same body and timing class |
-| Brute-forcing sign-in codes | 5 attempts per code, 10-minute TTL, rate limits per email and per IP, constant-time comparison |
+| Brute-forcing sign-in codes | 40-bit codes, 5 attempts per code, 10-minute TTL, 5 codes per hour per email, rate limits per IP, constant-time comparison |
+| Locking someone out of signing in | A code is reached only with its request token, so nobody else can use up its attempts or invalidate it. **Residual:** the per-email request cap bounds the mail an address can be sent, so it counts everyone's requests; filling it holds off new codes for that address for up to an hour. |
 | Session theft | httpOnly + Secure cookie, only the token hash is stored, 30-day idle expiry, logout and account deletion revoke sessions |
 | CSRF | SameSite=Lax cookie, plus the `Origin` and JSON content-type checks on writes. Bearer tokens are not subject to CSRF. |
 | XSS | React escaping; no `dangerouslySetInnerHTML`. Display names: NFKC-normalized, 2–24 characters (letters, digits, space, `-_.'`). Caddy sets a CSP (`default-src 'self'`, `connect-src 'self'`, inline styles allowed for react-native-web) and `X-Content-Type-Options`. |
 | Invite token leaks through the Referer header | `Referrer-Policy: no-referrer` and no third-party assets. Tokens are revocable and expire, and joining still requires approval. |
 | IDOR / cross-league access | `leagueId` always comes from the resolved membership; non-members get `404`; role checks happen in the domain layer |
-| Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join |
+| Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join, and each approval and role change is audited |
 | Commissioner abuse (force-confirm, overrides on their own games) | Allowed by decision, but every such action is audited and visible to all members, flagged when the commissioner played |
 | Duplicate or replayed submissions | Idempotency key plus a payload hash |
 | Race conditions | Game row lock; one transition function |
@@ -659,12 +670,15 @@ sinks don't end the game):
 
 **Auth**
 
-- An unknown email gets `202` with the same body as a known one.
+- An unknown email gets `202` with the same kind of body as a known one: a fresh request
+  token.
 - The correct code creates a session; the database holds only the hash.
 - The 5th wrong attempt invalidates the code.
 - A code fails at TTL + 1 s.
 - A code can't be reused.
-- A new code invalidates the old one.
+- A new code leaves the old one working.
+- Wrong attempts without a code's request token don't count against it, and the right
+  code with another request's token is refused.
 - The 6th code request in an hour gets `429`.
 - Logout revokes the session.
 - The web cookie is httpOnly, Secure, and SameSite=Lax.
@@ -682,6 +696,8 @@ sinks don't end the game):
   gets `404` for league Y's resources.
 - A non-commissioner calling a commissioner route gets `403`.
 - The last commissioner can't demote themselves or leave.
+- Approving a member and changing a role each write one audit entry; a refused or no-op
+  change writes none.
 
 **Submit**
 

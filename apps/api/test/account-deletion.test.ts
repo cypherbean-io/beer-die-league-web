@@ -12,6 +12,7 @@ import {
   MeResponse,
   PartnershipStatsResponse,
   PlayerStatsResponse,
+  RequestCodeResponse,
   type Season,
   SeasonResponse,
   type Team,
@@ -258,10 +259,14 @@ function getMe(as: Caller): Promise<Response> {
   return call('GET', '/api/me', { as });
 }
 
-// Mails a sign-in code to `email` through the real outbox, and returns it.
-async function mailedCode(email: string): Promise<string> {
+type Issued = { code: string; requestToken: string };
+
+// Mails a sign-in code to `email` through the real outbox, and returns it with the token its
+// request was answered with.
+async function mailedCode(email: string): Promise<Issued> {
   const res = await call('POST', '/api/auth/code', { body: { email } });
   expect(res.status).toBe(202);
+  const { requestToken } = RequestCodeResponse.parse(await res.json());
   await drainOutbox({
     db: api.db,
     clock,
@@ -270,13 +275,15 @@ async function mailedCode(email: string): Promise<string> {
     authSecret: api.authSecret,
     log: (entry) => api.logs.push(entry),
   });
-  const code = sent.findLast((m) => m.to[0]?.address === email)?.text.match(/\b(\d{6})\b/)?.[1];
+  const code = sent
+    .findLast((m) => m.to[0]?.address === email)
+    ?.text.match(/\b([0-9A-Z]{4}-[0-9A-Z]{4})\b/)?.[1];
   if (!code) throw new Error('no code was mailed to that address');
-  return code;
+  return { code, requestToken };
 }
 
-function verify(email: string, code: string): Promise<Response> {
-  return call('POST', '/api/auth/verify', { body: { email, code, client: 'native' } });
+function verify(email: string, issued: Issued): Promise<Response> {
+  return call('POST', '/api/auth/verify', { body: { email, ...issued, client: 'native' } });
 }
 
 type UserRow = { email: string | null; deleted_at: Date | null };
@@ -511,13 +518,18 @@ describe('deleting an account', () => {
 
   it('is not recorded in the league log, which is for commissioner actions', async () => {
     const s = await setup();
+    const log = async () => {
+      const res = await call('GET', `/api/leagues/${s.leagueId}/audit`, { as: s.commissioner });
+      return AuditResponse.parse(await res.json()).events;
+    };
+    const before = await log();
 
     await deleted(s.bo);
 
-    const res = await call('GET', `/api/leagues/${s.leagueId}/audit`, { as: s.commissioner });
-    const actions = AuditResponse.parse(await res.json()).events.map((e) => e.action);
-    expect(actions).not.toContain('member.removed');
-    expect(actions.every((a) => a.startsWith('season.') || a.startsWith('team.'))).toBe(true);
+    // Setup's own entries (seasons, teams, approvals) and nothing more.
+    const after = await log();
+    expect(after.map((e) => e.action)).not.toContain('member.removed');
+    expect(after.map((e) => e.id)).toEqual(before.map((e) => e.id));
   });
 
   it('deletes a membership still awaiting approval, which frees its name', async () => {

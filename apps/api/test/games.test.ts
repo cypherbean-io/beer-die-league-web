@@ -20,7 +20,13 @@ import { FixedClock } from '../src/clock.ts';
 import { GAME_WRITES_PER_HOUR, sweepExpired } from '../src/domain/games.ts';
 import { drainOutbox, type MailTransport } from '../src/mail/outbox.ts';
 import { freshDatabase, resetTables, waitForLockWaiters } from './support/db.ts';
-import { type Caller, client, createLeague, signIn } from './support/league.ts';
+import {
+  type Caller,
+  client,
+  createLeague,
+  fromMembershipSetup,
+  signIn,
+} from './support/league.ts';
 import { APP_ORIGIN, startApi, type TestApi } from './support/server.ts';
 
 const SECOND = 1000;
@@ -183,9 +189,14 @@ type TableName =
   | 'email_outbox'
   | 'counted_results';
 
+// The log is counted as auditLog reads it: without the entries setup wrote.
 async function rows(table: TableName) {
+  const own =
+    table === 'audit_events'
+      ? sql` where action not in ('member.approved', 'member.role_changed')`
+      : sql``;
   const [row] = await api.db.execute<{ n: number }>(
-    sql`select count(*)::int as n from ${sql.identifier(table)}`,
+    sql`select count(*)::int as n from ${sql.identifier(table)}${own}`,
   );
   return row!.n;
 }
@@ -285,10 +296,12 @@ async function decided(t: League, g: Game, decision: 'approve' | 'reject'): Prom
   return GameResponse.parse(await res.json()).game;
 }
 
+// Without the entries setup wrote to build the fixture (see fromMembershipSetup).
 async function auditLog(t: League, as: Caller) {
   const res = await call('GET', `/api/leagues/${t.leagueId}/audit`, { as });
   expect(res.status).toBe(200);
-  return AuditResponse.parse(await res.json()).events;
+  const { events } = AuditResponse.parse(await res.json());
+  return events.filter((e) => !fromMembershipSetup(e));
 }
 
 async function inbox(t: League, as: Caller): Promise<Game[]> {

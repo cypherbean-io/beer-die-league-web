@@ -26,6 +26,7 @@ import {
   type PlayerStats,
   PlayerStatResponse,
   PlayerStatsResponse,
+  RequestCodeResponse,
   type RulesBody,
   type Season,
   SeasonResponse,
@@ -101,13 +102,19 @@ export async function getHealth(): Promise<HealthResponse> {
   return HealthResponse.parse(await res.json());
 }
 
-export async function requestCode(email: string): Promise<void> {
+// Returns the request token, which the code mailed for this request works only with.
+export async function requestCode(email: string): Promise<string> {
   const res = await postJson('/api/auth/code', { email });
   if (res.status !== 202) throw await failure(res);
+  return RequestCodeResponse.parse(await res.json()).requestToken;
 }
 
-export async function verifyCode(email: string, code: string): Promise<VerifyCodeResponse> {
-  const res = await postJson('/api/auth/verify', { email, code, client: 'web' });
+export async function verifyCode(
+  email: string,
+  code: string,
+  requestToken: string,
+): Promise<VerifyCodeResponse> {
+  const res = await postJson('/api/auth/verify', { email, code, requestToken, client: 'web' });
   if (!res.ok) throw await failure(res);
   return VerifyCodeResponse.parse(await res.json());
 }

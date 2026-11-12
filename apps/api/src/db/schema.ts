@@ -37,20 +37,28 @@ export const users = pgTable('users', {
   deletedAt: ts('deleted_at'),
 });
 
-// One live code per email: requesting a new code overwrites the row, which invalidates the
-// earlier code. Only an HMAC of the code is stored.
+// One row per code request. A code is found by the token its request was answered with (only
+// the token's SHA-256 is stored), never by email, so nobody but the requester can use up its
+// attempts, and a later request for the same email leaves it alone. Only an HMAC of the code is
+// stored.
 export const authCodes = pgTable(
   'auth_codes',
   {
     id: id(),
-    email: text('email').notNull().unique(),
+    email: text('email').notNull(),
+    requestTokenSha256: text('request_token_sha256').notNull().unique(),
     codeHmac: text('code_hmac').notNull(),
     createdAt: ts('created_at').notNull(),
     expiresAt: ts('expires_at').notNull(),
     attempts: integer('attempts').notNull().default(0),
     consumedAt: ts('consumed_at'),
   },
-  (t) => [check('auth_codes_attempts_nonnegative', sql`${t.attempts} >= 0`)],
+  (t) => [
+    // Deleting an account erases its email's codes, and the purge asks whether an email has
+    // a live one.
+    index('auth_codes_email_idx').on(t.email),
+    check('auth_codes_attempts_nonnegative', sql`${t.attempts} >= 0`),
+  ],
 );
 
 export const sessions = pgTable(
@@ -74,7 +82,8 @@ export const sessions = pgTable(
   ],
 );
 
-// `key` is `email:<hmac>` or `ip:<hmac>`, so neither raw value is stored.
+// `key` is a limit's kind and an HMAC of what it counts, such as `email:<hmac>` or
+// `ip:<hmac>`, so neither raw value is stored.
 export const rateLimits = pgTable('rate_limits', {
   key: text('key').primaryKey(),
   windowStart: ts('window_start').notNull(),

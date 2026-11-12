@@ -66,3 +66,12 @@ export function client(baseUrl: string) {
     });
   };
 }
+
+// Approving a member and changing a role are logged (covered in membership.test.ts). Suites
+// about something else do both only to build their fixture, so their log helpers leave these
+// entries out and assert on what the action under test wrote.
+const MEMBERSHIP_SETUP = ['member.approved', 'member.role_changed'];
+
+export function fromMembershipSetup(entry: { action: string }): boolean {
+  return MEMBERSHIP_SETUP.includes(entry.action);
+}

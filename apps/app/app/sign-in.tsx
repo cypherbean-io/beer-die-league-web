@@ -24,16 +24,20 @@ export default function SignIn() {
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
+  // Answers the code request. The mailed code works only with it, so it stays in memory with
+  // the rest of this screen: after a reload, asking for a new code is the way back in.
+  const [requestToken, setRequestToken] = useState('');
 
   const send = useMutation({
     mutationFn: (address: string) => requestCode(address),
-    onSuccess: () => {
+    onSuccess: (token) => {
+      setRequestToken(token);
       setCode('');
       setStep('code');
     },
   });
   const verify = useMutation({
-    mutationFn: () => verifyCode(email.trim(), code),
+    mutationFn: () => verifyCode(email.trim(), code, requestToken),
     onSuccess: async () => {
       // /me carries the memberships Home needs, so load it before leaving this screen.
       await queryClient.fetchQuery({ queryKey: ['me'], queryFn: getMe });
@@ -78,17 +82,19 @@ export default function SignIn() {
       ) : (
         <>
           <Text style={styles.label} nativeID="code-label">
-            Enter the 6-digit code sent to {email.trim()}
+            Enter the 8-character code sent to {email.trim()}
           </Text>
           <TextInput
             testID="code-input"
             aria-labelledby="code-label"
             style={styles.input}
             value={code}
-            onChangeText={(text) => setCode(text.replace(/\D/g, '').slice(0, 6))}
+            // As mailed, "ABCD-EFGH"; the server reads it without the hyphen or in lower case too.
+            onChangeText={(text) => setCode(text.toUpperCase().replace(/[^0-9A-Z-]/g, ''))}
             autoComplete="one-time-code"
-            inputMode="numeric"
-            maxLength={6}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={9}
             onSubmitEditing={() => codeValid && verify.mutate()}
           />
           <Pressable
