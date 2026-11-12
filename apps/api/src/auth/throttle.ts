@@ -11,6 +11,8 @@ export type ThrottleLimits = {
   // Everything from one address. Generous, because a whole league can share one.
   ip: number;
   // Everything under /api/auth from one address: the routes that work without a session.
+  // Above what the hourly sign-in limits let one address do in a burst (a household signing
+  // in together, or the e2e suite), so it only ever refuses a flood.
   'auth-ip': number;
   // Everything from one signed-in user, across their sessions.
   user: number;
@@ -21,7 +23,7 @@ export type ThrottleBucket = keyof ThrottleLimits;
 
 export const DEFAULT_LIMITS: ThrottleLimits = {
   ip: 1200,
-  'auth-ip': 30,
+  'auth-ip': 60,
   user: 300,
   'stats-user': 60,
 };

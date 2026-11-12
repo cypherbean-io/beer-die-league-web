@@ -77,7 +77,7 @@ async function commissioner(): Promise<{ leagueId: string; caller: Caller }> {
 }
 
 describe('sign-in requests from one address', () => {
-  it('are refused past 30 a minute with 429 RATE_LIMITED', async () => {
+  it('are refused past 60 a minute with 429 RATE_LIMITED', async () => {
     await serve();
     for (let i = 0; i < DEFAULT_LIMITS['auth-ip']; i++) {
       // Unknown routes count too: the limit covers everything under /api/auth.

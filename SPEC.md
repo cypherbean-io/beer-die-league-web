@@ -494,7 +494,7 @@ All groups after Invites are under `/api/leagues/:id`.
   | Counted per | Requests a minute |
   | --- | --- |
   | Address, everything | 1200 |
-  | Address, `/api/auth/*` | 30 |
+  | Address, `/api/auth/*` | 60 |
   | Signed-in user, everything | 300 |
   | Signed-in user, stats and standings reads | 60 |
 
@@ -720,7 +720,7 @@ sinks don't end the game):
 - Wrong attempts without a code's request token don't count against it, and the right
   code with another request's token is refused.
 - The 6th code request in an hour gets `429`.
-- The 31st request to `/api/auth/*` in a minute from one address gets `429` with
+- The 61st request to `/api/auth/*` in a minute from one address gets `429` with
   `Retry-After`, and writes nothing to the database.
 - A user's requests past the per-user limit, and stats reads past the stats limit, get
   `429`; other users and other routes are unaffected.
