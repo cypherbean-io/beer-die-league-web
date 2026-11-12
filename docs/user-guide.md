@@ -81,6 +81,8 @@ Display names follow these rules:
   mixed.
 - They can't look like a web address, such as `bob.com`.
 - No two members of a league can have the same name, ignoring upper and lower case.
+- A name another member recently changed away from can't be used either: it stays theirs
+  for 90 days.
 
 Invite links expire after 14 days, each works for a limited number of people, and a
 commissioner can revoke one sooner. If the app says a link is invalid or has expired, ask
@@ -384,6 +386,11 @@ On **Account**:
 - **Display name:** changing it here changes it everywhere it appears, past games
   included. The same rules apply as when you joined. You can change it about ten times an
   hour.
+  - The name you change away from stays yours for 90 days: nobody else in the league can
+    take it, and you can change back to it at any time. This stops someone else from
+    taking a name the league still knows you by.
+  - Up to five names are kept for you this way. After that, you can only change back to
+    one of them until the oldest has been free for 90 days.
 - **Email notifications:** the switch "Email me when a game I played is recorded or
   corrected". For commissioners, it also turns the commissioner emails on or off (see
   [Emails](#emails)).
@@ -416,7 +423,7 @@ for it), and counts toward the same five codes an hour.
   as described above.
 - Your confirmed games still count. They show you as "Deleted player #N", unless you turn
   on **Keep my name on my games** first. A kept name stays reserved, so nobody else can
-  take it.
+  take it. Names you changed away from earlier are no longer kept for you.
 - Backups still hold deleted data for up to 14 days.
 - If you're the last commissioner of a league that has other members, make someone else a
   commissioner first.
@@ -588,7 +595,8 @@ else may be signed in as you: open **Account** and choose **Sign out everywhere*
 | "That code is wrong or has expired." | Codes last 10 minutes and work only on the sign-in page that asked for them. Request a new one and enter it on the same page. |
 | "Too many attempts. Wait a while and try again." | You've hit a sign-in limit. Wait an hour or so, then try again. |
 | "This invite link is invalid or has expired." | The link expired, was revoked, or has been used by as many people as it allows. Ask a commissioner for a new link. |
-| "That name is taken in this league." | Choose another display name. |
+| "That name is taken in this league." | Another member has that name, or changed away from it in the last 90 days. Choose another display name. |
+| "You've changed your name too many times lately." | Five names you used before are still kept for you. Change back to one of them, or wait until the oldest has been free for 90 days. |
 | **Season game** can't be selected. | You need to be on an approved team in the active season. The form says which part is missing. |
 | "That game changed after you loaded it, so nothing was saved." | Someone corrected the game meanwhile. Check the latest numbers, then act again. |
 | "The window to confirm that game closed, so it won't count." | The deadline passed. Record the game again if it should count. |

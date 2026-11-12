@@ -17,6 +17,9 @@ function settingsMessageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
     if (error.code === 'NAME_TAKEN') return 'That name is taken in your league. Try another.';
     if (error.code === 'RATE_LIMITED') return 'Too many name changes. Try again in an hour.';
+    if (error.code === 'TOO_MANY_NAME_CHANGES') {
+      return 'You’ve changed your name too many times lately. Go back to a name you used before, or try again later.';
+    }
     if (error.code === 'VALIDATION') return 'Check your display name and try again.';
   }
   return 'Couldn’t save. Check your connection and try again.';

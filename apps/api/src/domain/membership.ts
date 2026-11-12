@@ -25,7 +25,7 @@ import { TOKEN_PATTERN } from '../auth/sessions.ts';
 import type { Clock } from '../clock.ts';
 import { sha256Hex } from '../crypto.ts';
 import type { Db, Tx } from '../db/client.ts';
-import { invites, leagues, memberships, users } from '../db/schema.ts';
+import { invites, leagues, memberships, releasedNames, users } from '../db/schema.ts';
 import { ApiError } from '../http.ts';
 import { enqueueEmail } from '../mail/outbox.ts';
 import { MEMBER_PENDING, memberPendingParams } from '../mail/templates.ts';
@@ -36,6 +36,13 @@ export const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 // changes (updateMe) reveal the same, so they spend the same budget.
 const JOINS_PER_HOUR = 10;
 const HOUR_MS = 60 * 60 * 1000;
+// How long a name an approved member gave up stays theirs alone to take back. History shows a
+// member's current name, so without this someone could rename into a name the league still
+// knows another member by, and that member's past games would seem to be the newcomer's.
+export const NAME_HOLD_MS = 90 * 24 * 60 * 60 * 1000;
+// The most names held for one membership at a time, so renaming can't take names out of use
+// faster than the holds lapse.
+const MAX_HELD_NAMES = 5;
 
 // The caller's approved membership in the league named by the route, resolved by
 // requireMembership. Every league-scoped query takes `leagueId` from here, never from the
@@ -112,10 +119,101 @@ function violates(err: unknown, constraint: string): boolean {
   return cause?.code === '23505' && cause.constraint_name === constraint;
 }
 
+const nameTaken = (message: string) => new ApiError(409, 'NAME_TAKEN', message);
+
+// Refuses `key` in any of `leagueIds` where it is held for a member who gave it up. The caller
+// has already written the name and ended any hold of its own on it, so a hold still standing
+// is someone else's.
+//
+// This runs after the write on purpose. A rename moves the name out of the unique index and
+// records the hold in one transaction, so whoever takes the freed name next waited on that
+// index for the rename to commit, and this statement, starting afterwards, sees the hold.
+async function assertNotHeld(
+  tx: Tx,
+  leagueIds: string[],
+  key: string,
+  now: Date,
+  message: string,
+): Promise<void> {
+  const [held] = await tx
+    .select({ id: releasedNames.id })
+    .from(releasedNames)
+    .where(
+      and(
+        inArray(releasedNames.leagueId, leagueIds),
+        eq(releasedNames.nameKey, key),
+        gt(releasedNames.releasedAt, new Date(now.getTime() - NAME_HOLD_MS)),
+      ),
+    )
+    .limit(1);
+  if (held) throw nameTaken(message);
+}
+
+type Renamed = { id: string; leagueId: string; nameKey: string; status: string };
+
+// Keeps the holds in step with a rename to `key`, written just before by the caller: `before`
+// is the caller's memberships as they were. Taking back a name of one's own ends its hold;
+// the name left behind is held, where the member was approved (a pending member has no
+// history to protect).
+async function holdReleasedNames(tx: Tx, before: Renamed[], key: string, now: Date) {
+  const changed = before.filter((m) => m.nameKey !== key);
+  if (changed.length === 0) return;
+  const ids = changed.map((m) => m.id);
+  await tx
+    .delete(releasedNames)
+    .where(and(inArray(releasedNames.membershipId, ids), eq(releasedNames.nameKey, key)));
+  await assertNotHeld(
+    tx,
+    changed.map((m) => m.leagueId),
+    key,
+    now,
+    'That display name is taken in your league',
+  );
+
+  const released = changed.filter((m) => m.status === 'approved');
+  if (released.length === 0) return;
+  // A row already there is a lapsed hold from before this member had the name: while they
+  // had it, nobody else could give it up.
+  await tx
+    .insert(releasedNames)
+    .values(
+      released.map((m) => ({
+        leagueId: m.leagueId,
+        nameKey: m.nameKey,
+        membershipId: m.id,
+        releasedAt: now,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [releasedNames.leagueId, releasedNames.nameKey],
+      set: { membershipId: sql`excluded.membership_id`, releasedAt: sql`excluded.released_at` },
+    });
+  const [over] = await tx
+    .select({ membershipId: releasedNames.membershipId })
+    .from(releasedNames)
+    .where(
+      and(
+        inArray(releasedNames.membershipId, ids),
+        gt(releasedNames.releasedAt, new Date(now.getTime() - NAME_HOLD_MS)),
+      ),
+    )
+    .groupBy(releasedNames.membershipId)
+    .having(sql`count(*) > ${MAX_HELD_NAMES}`)
+    .limit(1);
+  if (over) {
+    throw new ApiError(
+      409,
+      'TOO_MANY_NAME_CHANGES',
+      'You have changed your name too many times. Go back to a name you used before, or try again later.',
+    );
+  }
+}
+
 // Changes the caller's own display name and email setting in every league they belong to,
 // pending or approved; memberships they have left or lost keep the name they had. A name
-// someone else holds in any of those leagues (kept names of deleted members included) refuses
-// the whole change. Not audited: players acting for themselves aren't.
+// someone else holds in any of those leagues (kept names of deleted members included), or
+// that is held for a member who gave it up, refuses the whole change. Not audited: players
+// acting for themselves aren't.
 export async function updateMe(
   deps: Deps,
   userId: string,
@@ -136,6 +234,7 @@ export async function updateMe(
       ? {}
       : { emailNotifications: input.emailNotifications }),
   };
+  const now = deps.clock.now();
   await deps.db.transaction(async (tx) => {
     // FOR SHARE first, as joinLeague does, so an account deletion either waits for this or
     // has already marked the account deleted.
@@ -145,19 +244,36 @@ export async function updateMe(
       .where(and(eq(users.id, userId), isNull(users.deletedAt)))
       .for('share');
     if (!account) throw new ApiError(401, 'UNAUTHENTICATED', 'Sign in to continue');
+    const mine = and(
+      eq(memberships.userId, userId),
+      inArray(memberships.status, ['pending', 'approved']),
+    );
+    // The names being given up, read under the lock the update takes anyway.
+    const before =
+      input.displayName === undefined
+        ? []
+        : await tx
+            .select({
+              id: memberships.id,
+              leagueId: memberships.leagueId,
+              nameKey: memberships.nameKey,
+              status: memberships.status,
+            })
+            .from(memberships)
+            .where(mine)
+            .orderBy(asc(memberships.id))
+            .for('update');
     try {
-      await tx
-        .update(memberships)
-        .set(set)
-        .where(
-          and(eq(memberships.userId, userId), inArray(memberships.status, ['pending', 'approved'])),
-        );
+      await tx.update(memberships).set(set).where(mine);
     } catch (err) {
       // The unique index decides, so two members racing for one name can't both get it.
       if (violates(err, NAME_KEY_UNIQUE)) {
-        throw new ApiError(409, 'NAME_TAKEN', 'That display name is taken in your league');
+        throw nameTaken('That display name is taken in your league');
       }
       throw err;
+    }
+    if (input.displayName !== undefined) {
+      await holdReleasedNames(tx, before, nameKey(input.displayName), now);
     }
   });
 }
@@ -230,8 +346,16 @@ export async function joinLeague(
         );
       throw existing
         ? new ApiError(409, 'ALREADY_MEMBER', 'You already belong to this league')
-        : new ApiError(409, 'NAME_TAKEN', 'That display name is taken in this league');
+        : nameTaken('That display name is taken in this league');
     }
+    // A name a member gave up is still theirs to take back.
+    await assertNotHeld(
+      tx,
+      [invite.leagueId],
+      nameKey(input.displayName),
+      now,
+      'That display name is taken in this league',
+    );
 
     const commissioners = await tx
       .select({ userId: memberships.userId })

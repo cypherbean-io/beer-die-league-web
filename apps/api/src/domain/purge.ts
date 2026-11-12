@@ -15,8 +15,17 @@ import {
 import { RATE_LIMIT_MAX_WINDOW_MS } from '../auth/rateLimit.ts';
 import type { Clock } from '../clock.ts';
 import type { Db } from '../db/client.ts';
-import { authCodes, emailOutbox, memberships, rateLimits, sessions, users } from '../db/schema.ts';
+import {
+  authCodes,
+  emailOutbox,
+  memberships,
+  rateLimits,
+  releasedNames,
+  sessions,
+  users,
+} from '../db/schema.ts';
 import { MAX_SEND_ATTEMPTS } from '../mail/outbox.ts';
+import { NAME_HOLD_MS } from './membership.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -38,6 +47,7 @@ export type PurgeCounts = {
   rateLimits: number;
   mail: number;
   users: number;
+  heldNames: number;
 };
 
 // The worker's housekeeping: deletes rows that no longer do anything. Each kind runs in
@@ -60,7 +70,14 @@ export async function purgeStale(
     }
   }
   const now = deps.clock.now();
-  const purged: PurgeCounts = { sessions: 0, codes: 0, rateLimits: 0, mail: 0, users: 0 };
+  const purged: PurgeCounts = {
+    sessions: 0,
+    codes: 0,
+    rateLimits: 0,
+    mail: 0,
+    users: 0,
+    heldNames: 0,
+  };
   let done = true;
   // Users go last: they become eligible once their sessions, codes, and mail are gone.
   for (const step of [
@@ -69,6 +86,7 @@ export async function purgeStale(
     staleRateLimits,
     finishedMail,
     unjoinedUsers,
+    lapsedNameHolds,
   ]) {
     let drained = false;
     for (let i = 0; i < maxBatches && !drained; i++) {
@@ -129,6 +147,23 @@ async function staleRateLimits(db: Db, now: Date, limit: number): Promise<Batch>
     .where(inArray(rateLimits.key, due))
     .returning({ key: rateLimits.key });
   return { scanned: rows.length, purged: { rateLimits: rows.length } };
+}
+
+// A name a member gave up is held for NAME_HOLD_MS; renames and joins already ignore a hold
+// older than that. The row keeps a name someone used to go by, so it goes once it does nothing.
+async function lapsedNameHolds(db: Db, now: Date, limit: number): Promise<Batch> {
+  const cutoff = new Date(now.getTime() - NAME_HOLD_MS);
+  const due = db
+    .select({ id: releasedNames.id })
+    .from(releasedNames)
+    .where(lte(releasedNames.releasedAt, cutoff))
+    .limit(limit)
+    .for('update', { skipLocked: true });
+  const rows = await db
+    .delete(releasedNames)
+    .where(inArray(releasedNames.id, due))
+    .returning({ id: releasedNames.id });
+  return { scanned: rows.length, purged: { heldNames: rows.length } };
 }
 
 // Mail the worker will never touch again: sent, or out of attempts.

@@ -9,6 +9,7 @@ import {
   invites,
   leagues,
   memberships,
+  releasedNames,
   revisionPlayers,
   sessions,
   users,
@@ -326,6 +327,9 @@ async function departDeleted(
     }
     await depart(tx, leagueId, self.id, 'deleted', now);
   }
+  // The names they gave up are theirs too, and are erased whether or not they keep the one
+  // they have now. That frees them: a hold protects a member the league still knows.
+  await tx.delete(releasedNames).where(eq(releasedNames.membershipId, self.id));
   // A member who had already left or been removed is anonymized too.
   await tx
     .update(memberships)

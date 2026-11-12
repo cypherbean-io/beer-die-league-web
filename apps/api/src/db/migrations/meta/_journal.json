@@ -148,6 +148,13 @@
       "when": 1794495225992,
       "tag": "0020_invite_join_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794515398253,
+      "tag": "0021_released_names",
+      "breakpoints": true
     }
   ]
 }

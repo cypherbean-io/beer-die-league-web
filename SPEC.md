@@ -176,6 +176,7 @@ Anything else needs the user to approve it first.
 | `rate_limits` | `key` (`email:<hmac>` or `ip:<hmac>`), `window_start`, `count` |
 | `leagues` | `name`, rules (`target_score` ≥1 default 11, `win_by` ≥1 default 2, `sink_points` ≥0 default 0, `sink_ends_game` default false), `confirmation_window_days` 1–30 default 7, `exhibition_correction_window_days` 0–365 default 30 |
 | `memberships` | `league_id`, `user_id`, `display_name`, `name_key` (NFKC + lowercase; `unique(league_id, name_key)`), `role ('member'\|'commissioner')`, `status ('pending'\|'approved'\|'removed'\|'left'\|'deleted')`, `email_notifications bool`, `keep_name_on_delete bool`. Games reference **memberships**, not users. |
+| `released_names` | `league_id`, `name_key`, `membership_id`, `released_at`; `unique(league_id, name_key)`. A name an approved member gave up by renaming, which nobody else in the league can take for 90 days. |
 | `invites` | `league_id`, `token_sha256`, `created_by`, `expires_at` (default 14 days), `revoked_at`, `max_joins` 1–50 default 10, `join_count` (never above `max_joins`) |
 | `seasons` | `league_id`, `name`, `status ('draft'\|'active'\|'ended'\|'finalized')`, `started_at`, `ended_at`, `finalized_at`, `standings_config jsonb`. A partial unique index allows at most one `active` season per league. |
 | `season_teams` | `season_id`, `name`, `status ('proposed'\|'accepted'\|'approved'\|'rejected'\|'withdrawn')`, `proposed_by` |
@@ -607,6 +608,7 @@ There is no date of birth, no location, and no payment data.
 | XSS | React escaping; no `dangerouslySetInnerHTML`. Display names: NFKC-normalized, 2–24 characters (letters, digits, space, `-_.'`). Caddy sets a CSP (`default-src 'self'`, `connect-src 'self'`, inline styles allowed for react-native-web) and `X-Content-Type-Options`. |
 | Invite token leaks through the Referer header | `Referrer-Policy: no-referrer` and no third-party assets. Tokens are revocable and expire, and joining still requires approval. |
 | A leaked invite link used to flood the league | A link admits at most `max_joins` people (the commissioner chooses 1–50, default 10) and then stops working, which bounds the names it can reserve and the "awaiting approval" mail it can send. The limit is claimed in the join's own transaction, so concurrent joins can't pass it and a refused join doesn't use it up. |
+| Impersonation by taking a name someone gave up | History shows each member's current name, so a name is never just free: a rename holds the old name for the member who gave it up for 90 days (`released_names`), against renames and joins alike, and they can take it back at any time. At most 5 names are held per member, so renaming can't take names out of use. **Residual:** after 90 days, or once the member deletes their account, the name is free again. |
 | IDOR / cross-league access | `leagueId` always comes from the resolved membership; non-members get `404`; role checks happen in the domain layer |
 | Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join, and each approval and role change is audited |
 | Commissioner abuse (force-confirm, overrides on their own games) | Allowed by decision, but every such action is audited and visible to all members, flagged when the commissioner played |
@@ -630,7 +632,8 @@ There is no date of birth, no location, and no payment data.
 - Commissioners see emails only for members pending approval.
 - **Account deletion** erases the email, sessions, codes, and outbox rows, and voids the
   member's open revisions. The display name becomes "Deleted player #N" unless the
-  member chose to keep it. A kept name stays reserved. Members who left, were removed, or
+  member chose to keep it. A kept name stays reserved. The names held for them from earlier
+  renames are erased and so become free. Members who left, were removed, or
   deleted their account are marked as former members wherever their name appears on games,
   stats, and rosters.
   Confirmed games remain, so other players' records don't change.
@@ -739,6 +742,10 @@ sinks don't end the game):
   a concurrent burst, and is then indistinguishable from an unknown one. A refused join
   doesn't count; a join later rejected by a commissioner does.
 - Display names are unique case-insensitively and after NFKC normalization.
+- A name an approved member gave up is refused to other members and to joiners until 90
+  days have passed, including when the two renames race; its owner can take it back. A
+  rename that would hold a sixth name is refused. Deleting the account erases the holds,
+  and the worker purges lapsed ones.
 - A table-driven test over **every** league route shows that a member of league X
   gets `404` for league Y's resources.
 - A non-commissioner calling a commissioner route gets `403`.
