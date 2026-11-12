@@ -5,14 +5,7 @@ import type { Db } from '../db/client.ts';
 import { rateLimits } from '../db/schema.ts';
 
 export type RateLimitKind =
-  | 'email'
-  | 'ip'
-  | 'verify-email'
-  | 'verify-ip'
-  | 'join'
-  | 'game-write'
-  | 'season-create'
-  | 'team-propose';
+  'email' | 'ip' | 'verify-ip' | 'join' | 'game-write' | 'season-create' | 'team-propose';
 
 // The eight 16-bit groups of a valid IPv6 address, `::` and a dotted IPv4 tail expanded.
 function ipv6Groups(ip: string): number[] {

@@ -1,4 +1,4 @@
-import { DisplayName } from '@beer-die/core';
+import { DisplayName, formatSignInCode } from '@beer-die/core';
 import { z } from 'zod';
 import { open, seal } from '../crypto.ts';
 
@@ -125,8 +125,9 @@ function renderSignInCode(params: unknown, ctx: { key: Buffer; now: Date }): Ren
   return {
     subject: 'Your Beer Die League sign-in code',
     text: [
-      `Your sign-in code is ${code}.`,
+      `Your sign-in code is ${formatSignInCode(code)}.`,
       '',
+      'Enter it in the browser or app where you asked for it; it works nowhere else.',
       "It expires in 10 minutes. If you didn't try to sign in, you can ignore this email.",
       '',
     ].join('\n'),

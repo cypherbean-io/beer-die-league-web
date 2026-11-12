@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { ErrorBody, MeResponse, VerifyCodeResponse } from '@beer-die/core';
+import { createHash, randomBytes } from 'node:crypto';
+import { ErrorBody, MeResponse, RequestCodeResponse, VerifyCodeResponse } from '@beer-die/core';
 import { type SQL, sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -89,30 +89,47 @@ function drain(transport: MailTransport = capturingTransport) {
   });
 }
 
-async function requestCode(email: string): Promise<void> {
+// What a code request leaves its caller holding: the request token the API answered with
+// and, once the outbox drains, the code mailed to the address.
+type Issued = { code: string; requestToken: string };
+
+// Returns the request token.
+async function requestCode(email: string): Promise<string> {
   const res = await post('/api/auth/code', { email });
   expect(res.status).toBe(202);
+  return RequestCodeResponse.parse(await res.json()).requestToken;
 }
+
+// The code as the mail shows it: two groups of four.
+const MAILED_CODE = /\b([0-9A-Z]{4}-[0-9A-Z]{4})\b/;
 
 function lastCodeMailedTo(email: string): string {
   const mail = sent.findLast((m) => m.to[0]?.address === email);
-  const code = mail?.text.match(/\b(\d{6})\b/)?.[1];
+  const code = mail?.text.match(MAILED_CODE)?.[1];
   if (!code) throw new Error('no code was mailed to that address');
   return code;
 }
 
-async function mailedCode(email: string): Promise<string> {
-  await requestCode(email);
+async function mailedCode(email: string): Promise<Issued> {
+  const requestToken = await requestCode(email);
   await drain();
-  return lastCodeMailedTo(email);
+  return { code: lastCodeMailedTo(email), requestToken };
 }
 
-function wrong(code: string): string {
-  return String((Number(code) + 1) % 1_000_000).padStart(6, '0');
+// The same request with a well-formed code that isn't the one mailed.
+function wrong(issued: Issued): Issued {
+  const last = issued.code.at(-1) === '2' ? '3' : '2';
+  return { ...issued, code: issued.code.slice(0, -1) + last };
 }
 
-function verify(email: string, code: string, client: 'web' | 'native' = 'web', opts: Opts = {}) {
-  return post('/api/auth/verify', { email, code, client }, opts);
+// What someone who never asked for a code can send: a well-formed guess and a token of their
+// own making.
+function stranger(): Issued {
+  return { code: '0000-0000', requestToken: randomBytes(32).toString('base64url') };
+}
+
+function verify(email: string, issued: Issued, client: 'web' | 'native' = 'web', opts: Opts = {}) {
+  return post('/api/auth/verify', { email, ...issued, client }, opts);
 }
 
 function sessionSetCookie(res: Response): string | undefined {
@@ -141,16 +158,17 @@ async function errorCode(res: Response): Promise<string> {
 }
 
 describe('POST /api/auth/code', () => {
-  it('mails a 6-digit code to the requested address', async () => {
+  it('mails an 8-character code, in two groups of four, to the requested address', async () => {
     await requestCode('ana@example.com');
     await drain();
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to[0]!.address).toBe('ana@example.com');
-    expect(sent[0]!.text).toMatch(/\b\d{6}\b/);
+    // Crockford base32: no I, L, O, or U.
+    expect(sent[0]!.text).toMatch(/\b[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}\b/);
   });
 
-  it('answers an unknown email with the same status and body as a known one', async () => {
+  it('answers an unknown email with the same status and kind of body as a known one', async () => {
     await signInWeb('known@example.com');
 
     const known = await post('/api/auth/code', { email: 'known@example.com' });
@@ -158,7 +176,23 @@ describe('POST /api/auth/code', () => {
 
     expect(unknown.status).toBe(202);
     expect(known.status).toBe(202);
-    expect(await unknown.text()).toBe(await known.text());
+    // Each is a fresh random token and nothing else, so neither says whether an account exists.
+    const tokens = [
+      RequestCodeResponse.parse(await known.json()).requestToken,
+      RequestCodeResponse.parse(await unknown.json()).requestToken,
+    ];
+    expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tokens[1]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tokens[0]).not.toBe(tokens[1]);
+  });
+
+  it('stores only a hash of the request token', async () => {
+    const requestToken = await requestCode('ana@example.com');
+
+    const [row] = await api.db.execute<{ request_token_sha256: string }>(
+      sql`select request_token_sha256 from auth_codes`,
+    );
+    expect(row!.request_token_sha256).toBe(createHash('sha256').update(requestToken).digest('hex'));
   });
 
   it('stores the code in the outbox only in sealed form and wipes it after sending', async () => {
@@ -174,6 +208,7 @@ describe('POST /api/auth/code', () => {
     );
 
     expect(JSON.stringify(queued!.params)).not.toContain(code);
+    expect(JSON.stringify(queued!.params)).not.toContain(code.replace('-', ''));
     expect(afterSend!.params).toEqual({});
   });
 
@@ -270,9 +305,9 @@ describe('POST /api/auth/code', () => {
 
 describe('POST /api/auth/verify', () => {
   it('creates a session for the correct code and stores only the token hash', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(200);
     const body = VerifyCodeResponse.parse(await res.json());
@@ -288,9 +323,20 @@ describe('POST /api/auth/verify', () => {
   });
 
   it('treats the email case-insensitively', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
 
-    const res = await verify('Ana@Example.COM', code);
+    const res = await verify('Ana@Example.COM', issued);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts the code typed in lower case without its hyphen', async () => {
+    const issued = await mailedCode('ana@example.com');
+
+    const res = await verify('ana@example.com', {
+      ...issued,
+      code: issued.code.replace('-', '').toLowerCase(),
+    });
 
     expect(res.status).toBe(200);
   });
@@ -316,36 +362,36 @@ describe('POST /api/auth/verify', () => {
   });
 
   it('rejects a wrong code with 401 INVALID_CODE', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
 
-    const res = await verify('ana@example.com', wrong(code));
+    const res = await verify('ana@example.com', wrong(issued));
 
     expect(res.status).toBe(401);
     expect(await errorCode(res)).toBe('INVALID_CODE');
   });
 
   it('still accepts the correct code after four wrong attempts', async () => {
-    const code = await mailedCode('ana@example.com');
-    for (let i = 0; i < 4; i++) await verify('ana@example.com', wrong(code));
+    const issued = await mailedCode('ana@example.com');
+    for (let i = 0; i < 4; i++) await verify('ana@example.com', wrong(issued));
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(200);
   });
 
   it('invalidates the code on the 5th wrong attempt', async () => {
-    const code = await mailedCode('ana@example.com');
-    for (let i = 0; i < 5; i++) await verify('ana@example.com', wrong(code));
+    const issued = await mailedCode('ana@example.com');
+    for (let i = 0; i < 5; i++) await verify('ana@example.com', wrong(issued));
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(401);
   });
 
   it('evaluates at most 5 guesses from a concurrent burst', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
 
-    await Promise.all(Array.from({ length: 10 }, () => verify('ana@example.com', wrong(code))));
+    await Promise.all(Array.from({ length: 10 }, () => verify('ana@example.com', wrong(issued))));
 
     // Every evaluated guess increments `attempts`; guesses past the cap are refused unseen.
     const [row] = await api.db.execute<{ attempts: number }>(sql`select attempts from auth_codes`);
@@ -353,72 +399,97 @@ describe('POST /api/auth/verify', () => {
   });
 
   it('accepts a code 1 s before its TTL', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
     clock.advance(CODE_TTL - SECOND);
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(200);
   });
 
   it('rejects a code at TTL + 1 s', async () => {
-    const code = await mailedCode('ana@example.com');
+    const issued = await mailedCode('ana@example.com');
     clock.advance(CODE_TTL + SECOND);
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(401);
   });
 
   it('rejects a code that was already used', async () => {
-    const code = await mailedCode('ana@example.com');
-    await verify('ana@example.com', code);
+    const issued = await mailedCode('ana@example.com');
+    await verify('ana@example.com', issued);
 
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(401);
   });
 
-  it('rate limits the 21st verify attempt for one email within a day, across codes', async () => {
-    for (let i = 0; i < 20; i++) await verify('ana@example.com', '000000');
-    const code = await mailedCode('ana@example.com');
+  it('still accepts the correct code after 20 wrong attempts by someone without its request token', async () => {
+    const issued = await mailedCode('ana@example.com');
+    for (let i = 0; i < 20; i++) await verify('ana@example.com', stranger());
 
-    const res = await verify('ana@example.com', code);
-
-    expect(res.status).toBe(429);
-    expect(await errorCode(res)).toBe('RATE_LIMITED');
-  });
-
-  it('allows verify attempts for that email again once the day has passed', async () => {
-    for (let i = 0; i < 20; i++) await verify('ana@example.com', '000000');
-    clock.advance(DAY);
-    const code = await mailedCode('ana@example.com');
-
-    const res = await verify('ana@example.com', code);
+    const res = await verify('ana@example.com', issued);
 
     expect(res.status).toBe(200);
   });
 
-  it('rate limits the 61st verify attempt from one IP within an hour', async () => {
-    for (let i = 0; i < 60; i++) await verify(`player${i}@example.com`, '000000');
+  it('counts no attempt against a code when the request token is not its own', async () => {
+    await mailedCode('ana@example.com');
 
-    const res = await verify('player60@example.com', '000000');
+    for (let i = 0; i < 5; i++) await verify('ana@example.com', stranger());
+
+    const [row] = await api.db.execute<{ attempts: number }>(sql`select attempts from auth_codes`);
+    expect(row!.attempts).toBe(0);
+  });
+
+  it("refuses a correct code presented with another request's token", async () => {
+    const mine = await mailedCode('ana@example.com');
+    const theirs = await mailedCode('ana@example.com');
+
+    const res = await verify('ana@example.com', {
+      code: mine.code,
+      requestToken: theirs.requestToken,
+    });
+
+    // Unless the two random codes happen to match, which is one time in 2^40.
+    expect(res.status).toBe(mine.code === theirs.code ? 200 : 401);
+  });
+
+  it('refuses a code presented for an email other than the one it was mailed to', async () => {
+    const issued = await mailedCode('ana@example.com');
+
+    const res = await verify('bo@example.com', issued);
+
+    expect(res.status).toBe(401);
+    expect(await errorCode(res)).toBe('INVALID_CODE');
+  });
+
+  it('rejects a verify with no request token with 422 VALIDATION', async () => {
+    const { code } = await mailedCode('ana@example.com');
+
+    const res = await post('/api/auth/verify', { email: 'ana@example.com', code, client: 'web' });
+
+    expect(res.status).toBe(422);
+    expect(await errorCode(res)).toBe('VALIDATION');
+  });
+
+  it('rate limits the 61st verify attempt from one IP within an hour', async () => {
+    for (let i = 0; i < 60; i++) await verify(`player${i}@example.com`, stranger());
+
+    const res = await verify('player60@example.com', stranger());
 
     expect(res.status).toBe(429);
     expect(await errorCode(res)).toBe('RATE_LIMITED');
   });
 
-  it('invalidates the previous code when a new one is requested', async () => {
+  it('keeps an earlier code working when another is requested for the same email', async () => {
     const first = await mailedCode('ana@example.com');
-    let second = await mailedCode('ana@example.com');
-    // Two random codes collide one time in a million; request again rather than flake.
-    while (second === first) second = await mailedCode('ana@example.com');
+    await mailedCode('ana@example.com');
 
-    const stale = await verify('ana@example.com', first);
-    const fresh = await verify('ana@example.com', second);
+    const res = await verify('ana@example.com', first);
 
-    expect(stale.status).toBe(401);
-    expect(fresh.status).toBe(200);
+    expect(res.status).toBe(200);
   });
 });
 
@@ -560,14 +631,14 @@ describe('sign-in lock order', () => {
 
   it('lets a code request and a verify for the same email wait on each other without deadlocking', async () => {
     const email = 'ana@example.com';
-    const code = await mailedCode(email);
+    const issued = await mailedCode(email);
     const releaseCode = await hold(sql`select 1 from auth_codes where email = ${email} for update`);
     const releaseUser = await hold(sql`select 1 from users where email = ${email} for share`);
 
     // The verify queues for the code row and the request for the first row it takes. Once the
     // verify holds the code row it waits for the user row, so a request that took the user
     // row first would then wait on the verify: a deadlock.
-    const verifying = verify(email, code);
+    const verifying = verify(email, issued);
     await waitForLockWaiters(api.db, 1);
     const requesting = post('/api/auth/code', { email });
     await waitForLockWaiters(api.db, 2);
@@ -585,9 +656,9 @@ describe('sign-in lock order', () => {
 describe('auth logging', () => {
   it('logs route templates but never the email, code, or token', async () => {
     const email = 'ana@example.com';
-    const code = await mailedCode(email);
-    await verify(email, wrong(code));
-    const res = await verify(email, code);
+    const issued = await mailedCode(email);
+    await verify(email, wrong(issued));
+    const res = await verify(email, issued);
     const cookie = sessionSetCookie(res)!.split(';')[0]!;
     await getMe({ cookie });
     await post('/api/auth/logout', {}, { cookie });
@@ -596,7 +667,8 @@ describe('auth logging', () => {
 
     const logged = JSON.stringify(api.logs);
     expect(api.logs).toContainEqual(expect.objectContaining({ route: '/api/auth/verify' }));
-    for (const secret of [email, 'bo@example.com', code, cookie.slice(8), token]) {
+    const secrets = [issued.code, issued.code.replace('-', ''), issued.requestToken];
+    for (const secret of [email, 'bo@example.com', ...secrets, cookie.slice(8), token]) {
       expect(logged).not.toContain(secret);
     }
   });

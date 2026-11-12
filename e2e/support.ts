@@ -34,12 +34,12 @@ async function codeFor(email: string): Promise<string> {
           const message = (await (
             await mail.get(`/api/v1/message/${latest.ID}`)
           ).json()) as MailpitMessage;
-          code = /sign-in code is (\d{6})/.exec(message.Text)?.[1];
+          code = /sign-in code is ([0-9A-Z]{4}-[0-9A-Z]{4})/.exec(message.Text)?.[1];
           return code;
         },
         { message: `a sign-in code for ${email}`, timeout: 30_000 },
       )
-      .toMatch(/^\d{6}$/);
+      .toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
     return code!;
   } finally {
     await mail.dispose();

@@ -141,7 +141,7 @@ The web app shows each person a single league, so create one league per deployme
 ### 5. Sign in
 
 1. Open your `APP_ORIGIN` in a browser.
-2. Enter the commissioner email and type in the 6-digit code that arrives by email.
+2. Enter the commissioner email and type in the 8-character code that arrives by email.
 3. On Home, choose **Invite players** to create an invite link, then share it.
 
 The [commissioner section of the user guide](user-guide.md#for-commissioners) covers the

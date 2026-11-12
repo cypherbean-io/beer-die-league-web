@@ -21,7 +21,27 @@ export const Email = z
   .max(254)
   .transform((email) => email.toLowerCase());
 
-export const SignInCode = z.string().regex(/^[0-9]{6}$/, 'Expected a 6-digit code');
+// A sign-in code is 8 characters of Crockford base32 (40 bits), which leaves out I, L, O, and
+// U. That is long enough that the few guesses a code allows can't find it.
+export const SIGN_IN_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+export const SIGN_IN_CODE_LENGTH = 8;
+
+// The code as it was sent, from the code as someone typed it: case, spaces, and hyphens don't
+// matter, and the letters the alphabet leaves out read as the digits they look like.
+export function normalizeSignInCode(typed: string): string {
+  return typed.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+}
+
+// How mail shows a code: two groups of four.
+export function formatSignInCode(code: string): string {
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+export const SignInCode = z
+  .string()
+  .max(32)
+  .transform(normalizeSignInCode)
+  .pipe(z.string().regex(/^[0-9A-HJKMNP-TV-Z]{8}$/, 'Expected the 8-character code'));
 
 export const SessionClient = z.enum(['web', 'native']);
 export type SessionClient = z.infer<typeof SessionClient>;
@@ -29,9 +49,18 @@ export type SessionClient = z.infer<typeof SessionClient>;
 export const RequestCodeBody = z.strictObject({ email: Email });
 export type RequestCodeBody = z.input<typeof RequestCodeBody>;
 
+// Answers every code request, whether or not the email has an account. The code that request
+// mails works only together with this token (32 random bytes, base64url), so only whoever
+// asked for a code can try it, use up its attempts, or sign in with it.
+export const RequestToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'Expected a request token');
+
+export const RequestCodeResponse = z.strictObject({ requestToken: RequestToken });
+export type RequestCodeResponse = z.infer<typeof RequestCodeResponse>;
+
 export const VerifyCodeBody = z.strictObject({
   email: Email,
   code: SignInCode,
+  requestToken: RequestToken,
   client: SessionClient,
 });
 export type VerifyCodeBody = z.input<typeof VerifyCodeBody>;

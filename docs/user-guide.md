@@ -47,10 +47,13 @@ To set up a server, see the [install guide](install.md).
 There are no passwords. You sign in with a code sent to your email:
 
 1. Enter your email and choose **Email me a code**.
-2. Type in the 6-digit code from the email and choose **Sign in**.
+2. Type in the 8-character code from the email (for example `ABCD-EFGH`) and choose
+   **Sign in**. Capitals and the hyphen are optional.
 
-- A code expires after 10 minutes and works only once. Each new code you request replaces
-  the previous one.
+- A code works only in the browser where you asked for it, with the sign-in page still
+  open. You can read the email on another device, but type the code into that page. If you
+  close or reload the page, request a new code.
+- A code expires after 10 minutes and works only once.
 - After five wrong tries, a code stops working, so request a new one. To change the
   email or get a new code, choose **Use a different email or resend**.
 - You can request up to five codes an hour for one email address.
@@ -562,7 +565,7 @@ notifications on **Account** stops every email except sign-in codes.
 | Problem | What to do |
 | --- | --- |
 | The sign-in code doesn't arrive. | Wait a minute and check your spam folder. Then choose **Use a different email or resend** to request another. |
-| "That code is wrong or has expired." | Codes last 10 minutes, and only the newest one works. Request a new one. |
+| "That code is wrong or has expired." | Codes last 10 minutes and work only on the sign-in page that asked for them. Request a new one and enter it on the same page. |
 | "Too many attempts. Wait a while and try again." | You've hit a sign-in limit. Wait an hour or so, then try again. |
 | "This invite link is invalid or has expired." | Ask a commissioner for a new link. |
 | "That name is taken in this league." | Choose another display name. |

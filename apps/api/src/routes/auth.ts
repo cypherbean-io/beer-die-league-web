@@ -1,6 +1,7 @@
 import {
   EmptyBody,
   RequestCodeBody,
+  type RequestCodeResponse,
   VerifyCodeBody,
   type VerifyCodeResponse,
 } from '@beer-die/core';
@@ -34,9 +35,12 @@ export function authRoutes(deps: AppDeps) {
   return new Hono<AuthEnv>()
     .post('/auth/code', async (c) => {
       const { email } = await readJson(c, RequestCodeBody);
-      await requestCode(deps, { email, ip: clientIp(c, deps.config.trustProxy) });
-      // Always 202 with an empty body, whether or not the email has an account.
-      return c.body(null, 202);
+      const requestToken = await requestCode(deps, {
+        email,
+        ip: clientIp(c, deps.config.trustProxy),
+      });
+      // Always 202 with a fresh token, whether or not the email has an account.
+      return c.json({ requestToken } satisfies RequestCodeResponse, 202);
     })
     .post('/auth/verify', async (c) => {
       const body = await readJson(c, VerifyCodeBody);
