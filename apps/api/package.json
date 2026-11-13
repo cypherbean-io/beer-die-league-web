@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@beer-die/core": "*",
-    "@hono/node-server": "^2.1.5",
+    "@hono/node-server": "^2.1.6",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
     "nodemailer": "^10.1.4",
