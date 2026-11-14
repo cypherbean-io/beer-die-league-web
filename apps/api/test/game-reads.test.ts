@@ -373,6 +373,38 @@ describe('GET /games/:gid', () => {
     ]);
   });
 
+  it("finds a game's log entries by index, without reading the rest of the league's log", async () => {
+    const t = await table();
+    const g = await submitted(t, t.ana.caller, game(t));
+    const forced = await call(
+      'POST',
+      `/api/leagues/${t.leagueId}/games/${g.id}/revisions/${g.openRevision!.id}/force-confirm`,
+      { as: t.commissioner, body: { membershipIds: [t.cy.membershipId] } },
+    );
+    expect(forced.status).toBe(200);
+    // A league's log grows for as long as the league plays: entries about 2,000 other games.
+    await api.db.execute(sql`
+      insert into audit_events
+        (league_id, actor_membership_id, action, target_type, target_id,
+         actor_was_participant, details, created_at)
+      select ${t.leagueId}, ${t.ana.membershipId}, 'game.override_decided', 'game', uuidv7(),
+             false, '{}'::jsonb, ${NOW}::timestamptz
+      from generate_series(1, 2000)`);
+    await api.db.execute(sql`analyze audit_events`);
+
+    // The query listGameAudit (domain/audit.ts) runs for the game's page.
+    const plan = await api.db.execute(sql`
+      explain (format json)
+      select e.id, m.display_name
+      from audit_events e
+      join memberships m on m.id = e.actor_membership_id
+      where e.league_id = ${t.leagueId} and e.target_type = 'game' and e.target_id = ${g.id}
+      order by e.id desc
+      limit 100`);
+
+    expect(JSON.stringify(plan)).toContain('audit_events_league_id_target_id_id_idx');
+  });
+
   it('shows a lapsed open revision as expired in the history', async () => {
     const t = await table();
     const g = await submitted(t, t.ana.caller, game(t));

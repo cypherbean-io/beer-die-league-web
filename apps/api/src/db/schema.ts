@@ -237,8 +237,13 @@ export const auditEvents = pgTable(
     details: jsonb('details').notNull(),
     createdAt: ts('created_at').notNull(),
   },
-  // The log is read newest first, paging on the (time-ordered) UUIDv7 id.
-  (t) => [index('audit_events_league_id_id_idx').on(t.leagueId, t.id)],
+  (t) => [
+    // The log is read newest first, paging on the (time-ordered) UUIDv7 id.
+    index('audit_events_league_id_id_idx').on(t.leagueId, t.id),
+    // A game's page reads the entries about that game alone (listGameAudit), also newest
+    // first, however long the league's log has grown.
+    index('audit_events_league_id_target_id_id_idx').on(t.leagueId, t.targetId, t.id),
+  ],
 );
 
 // A shareable join link. Only the SHA-256 of its token is stored; the link is shown once. It

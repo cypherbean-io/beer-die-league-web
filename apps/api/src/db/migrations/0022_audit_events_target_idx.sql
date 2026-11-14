@@ -1,0 +1,1 @@
+CREATE INDEX "audit_events_league_id_target_id_id_idx" ON "audit_events" USING btree ("league_id","target_id","id");
