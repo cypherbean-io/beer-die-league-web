@@ -546,6 +546,68 @@ describe('sessions', () => {
 
     expect(res.status).toBe(200);
   });
+
+  it('expires a session 90 days after sign-in, however recently it was used', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    for (let day = 20; day <= 80; day += 20) {
+      clock.advance(20 * DAY);
+      expect((await getMe({ cookie })).status).toBe(200);
+    }
+    clock.advance(10 * DAY);
+
+    const res = await getMe({ cookie });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('keeps a session in use alive until 1 s before 90 days from sign-in', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    for (let day = 20; day <= 80; day += 20) {
+      clock.advance(20 * DAY);
+      await getMe({ cookie });
+    }
+    clock.advance(10 * DAY - SECOND);
+
+    const res = await getMe({ cookie });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('never stores an expiry later than 90 days from sign-in', async () => {
+    const signedInAt = clock.now().getTime();
+    const cookie = await signInWeb('ana@example.com');
+    clock.advance(29 * DAY);
+    await getMe({ cookie });
+    clock.advance(29 * DAY);
+    await getMe({ cookie });
+    clock.advance(29 * DAY);
+
+    await getMe({ cookie });
+
+    const [row] = await api.db.execute<{ expires_at: string }>(
+      sql`select expires_at from sessions`,
+    );
+    expect(new Date(row!.expires_at).getTime()).toBe(signedInAt + 90 * DAY);
+  });
+
+  it('expires a bearer session 90 days after sign-in too', async () => {
+    const token = await signInNative('ana@example.com');
+    for (let day = 20; day <= 80; day += 20) {
+      clock.advance(20 * DAY);
+      await getMe({ bearer: token });
+    }
+    clock.advance(10 * DAY);
+
+    const res = await getMe({ bearer: token });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('sets the web cookie to last as long as the session can, 90 days', async () => {
+    const res = await verify('ana@example.com', await mailedCode('ana@example.com'));
+
+    expect(sessionSetCookie(res)).toMatch(/Max-Age=7776000(;|$)/);
+  });
 });
 
 describe('POST /api/auth/logout', () => {
@@ -593,6 +655,71 @@ describe('POST /api/auth/logout', () => {
 
     expect(res.status).toBe(422);
     expect(await errorCode(res)).toBe('VALIDATION');
+    expect((await getMe({ cookie })).status).toBe(200);
+  });
+});
+
+describe('POST /api/auth/logout-all', () => {
+  it('revokes every session of the user, on every device', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    const laptop = await signInWeb('ana@example.com');
+    const phone = await signInNative('ana@example.com');
+
+    const res = await post('/api/auth/logout-all', {}, { cookie });
+
+    expect(res.status).toBe(204);
+    expect((await getMe({ cookie })).status).toBe(401);
+    expect((await getMe({ cookie: laptop })).status).toBe(401);
+    expect((await getMe({ bearer: phone })).status).toBe(401);
+  });
+
+  it('clears the web session cookie', async () => {
+    const cookie = await signInWeb('ana@example.com');
+
+    const res = await post('/api/auth/logout-all', {}, { cookie });
+
+    expect(sessionSetCookie(res)).toMatch(/Max-Age=0/);
+  });
+
+  it("leaves other users' sessions alone", async () => {
+    const cookie = await signInWeb('ana@example.com');
+    const other = await signInWeb('bo@example.com');
+
+    await post('/api/auth/logout-all', {}, { cookie });
+
+    expect((await getMe({ cookie: other })).status).toBe(200);
+  });
+
+  it('lets the user sign in again afterwards', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    await post('/api/auth/logout-all', {}, { cookie });
+
+    const again = await signInWeb('ana@example.com');
+
+    expect((await getMe({ cookie: again })).status).toBe(200);
+  });
+
+  it('requires a session', async () => {
+    const res = await post('/api/auth/logout-all', {});
+
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a cookie-authenticated request from a foreign Origin with 403', async () => {
+    const cookie = await signInWeb('ana@example.com');
+
+    const res = await post('/api/auth/logout-all', {}, { cookie, origin: 'https://evil.example' });
+
+    expect(res.status).toBe(403);
+    expect((await getMe({ cookie })).status).toBe(200);
+  });
+
+  it('rejects a body with unknown keys with 422 VALIDATION, keeping every session', async () => {
+    const cookie = await signInWeb('ana@example.com');
+
+    const res = await post('/api/auth/logout-all', { except: 'this' }, { cookie });
+
+    expect(res.status).toBe(422);
     expect((await getMe({ cookie })).status).toBe(200);
   });
 });

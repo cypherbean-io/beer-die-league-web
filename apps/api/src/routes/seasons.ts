@@ -8,7 +8,7 @@ import {
 } from '@beer-die/core';
 import { Hono } from 'hono';
 import type { AppDeps } from '../app.ts';
-import type { LeagueEnv } from '../auth/middleware.ts';
+import { type LeagueEnv, throttleUser } from '../auth/middleware.ts';
 import {
   createSeason,
   endSeason,
@@ -19,7 +19,8 @@ import {
 import { idParam, readJson } from '../http.ts';
 import { getStandings } from '../stats/queries.ts';
 
-// Mounted inside leagueRoutes, which has already resolved the caller's membership.
+// Mounted inside leagueRoutes, which has already resolved the caller's membership. Standings
+// aggregate over the season's games, so reading them spends the stats limit.
 export function seasonRoutes(deps: AppDeps) {
   return new Hono<LeagueEnv>()
     .get('/seasons', async (c) => {
@@ -51,7 +52,7 @@ export function seasonRoutes(deps: AppDeps) {
       );
       return c.json({ season } satisfies SeasonResponse);
     })
-    .get('/seasons/:sid/standings', async (c) => {
+    .get('/seasons/:sid/standings', throttleUser(deps, 'stats-user'), async (c) => {
       const standings = await getStandings(deps.db, c.get('membership')!, idParam(c, 'sid'));
       return c.json(standings satisfies StandingsResponse);
     });

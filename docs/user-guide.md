@@ -57,8 +57,9 @@ There are no passwords. You sign in with a code sent to your email:
 - After five wrong tries, a code stops working, so request a new one. To change the
   email or get a new code, choose **Use a different email or resend**.
 - You can request up to five codes an hour for one email address.
-- You stay signed in on that browser until you sign out or go 30 days without using the
-  app.
+- You stay signed in on that browser until you sign out, go 30 days without using the
+  app, or reach 90 days since you signed in, whichever comes first. Then you sign in again
+  with a new code.
 
 ### Joining a league
 
@@ -80,9 +81,12 @@ Display names follow these rules:
   mixed.
 - They can't look like a web address, such as `bob.com`.
 - No two members of a league can have the same name, ignoring upper and lower case.
+- A name another member recently changed away from can't be used either: it stays theirs
+  for 90 days.
 
-Invite links expire after 14 days, and a commissioner can revoke one sooner. If the app
-says a link is invalid or has expired, ask a commissioner for a new one.
+Invite links expire after 14 days, each works for a limited number of people, and a
+commissioner can revoke one sooner. If the app says a link is invalid or has expired, ask
+a commissioner for a new one.
 
 ### Home
 
@@ -382,10 +386,17 @@ On **Account**:
 - **Display name:** changing it here changes it everywhere it appears, past games
   included. The same rules apply as when you joined. You can change it about ten times an
   hour.
+  - The name you change away from stays yours for 90 days: nobody else in the league can
+    take it, and you can change back to it at any time. This stops someone else from
+    taking a name the league still knows you by.
+  - Up to five names are kept for you this way. After that, you can only change back to
+    one of them until the oldest has been free for 90 days.
 - **Email notifications:** the switch "Email me when a game I played is recorded or
   corrected". For commissioners, it also turns the commissioner emails on or off (see
   [Emails](#emails)).
 - **Sign out:** signs this browser out and deletes any unsent game form saved on it.
+- **Sign out everywhere:** signs you out of every browser and device, this one included.
+  Use it if you lose a device or think someone else is signed in as you.
 
 ### Leaving the league
 
@@ -400,13 +411,19 @@ At the bottom of **Members**, choose **Leave league**, then confirm.
 
 ### Deleting your account
 
-At the bottom of **Account**, choose **Delete account**, then confirm.
+1. At the bottom of **Account**, choose **Delete account**. The app emails you a deletion
+   code. It's a different code from a sign-in code, and the email says so.
+2. Type in the code and choose **Delete my account**.
+
+Being signed in isn't enough to delete an account: it takes the emailed code as well. The
+code follows the same rules as a sign-in code (10 minutes, five tries, the page that asked
+for it), and counts toward the same five codes an hour.
 
 - Your email, sign-in sessions, and pending emails are erased, and you leave the league
   as described above.
 - Your confirmed games still count. They show you as "Deleted player #N", unless you turn
   on **Keep my name on my games** first. A kept name stays reserved, so nobody else can
-  take it.
+  take it. Names you changed away from earlier are no longer kept for you.
 - Backups still hold deleted data for up to 14 days.
 - If you're the last commissioner of a league that has other members, make someone else a
   commissioner first.
@@ -423,12 +440,18 @@ the [league log](#members-and-the-league-log), where every member can see it.
 
 ### Inviting players
 
-1. On Home, choose **Invite players**, then **Create invite link**.
-2. Copy the link and share it. The app shows the link only once.
+1. On Home, choose **Invite players**.
+2. Set how many people can join with the link: from 1 to 50, and 10 unless you change it.
+   Then choose **Create invite link**.
+3. Copy the link and share it. The app shows the link only once.
 
-- A link works for any number of people until it expires after 14 days. Anyone who has it
-  can ask to join, and you approve every request.
-- **Active links** lists your links. Choose **Revoke** to stop a link working at once.
+- A link stops working once that many people have joined through it, or after 14 days,
+  whichever comes first. Anyone who has it can ask to join, and you approve every request.
+  A request you reject still counts toward the link's limit.
+- Keep the number close to how many people you're inviting. If a link reaches someone it
+  wasn't meant for, the limit caps how many requests and emails it can cause.
+- **Active links** lists the links that still work, with how many joins each has used.
+  Choose **Revoke** to stop a link working at once.
 - When a commissioner leaves the league or is removed, the links they created stop
   working.
 
@@ -544,13 +567,17 @@ The app sends these emails:
 | Subject | Sent to | When |
 | --- | --- | --- |
 | Your Beer Die League sign-in code | You | You ask for a sign-in code. |
+| Your Beer Die League account deletion code | You | You choose **Delete account**. |
 | A new game is waiting for your confirmation | The other players in the game | A player records a game. |
 | A corrected game is waiting for your confirmation | The other players in the game | A player corrects or reopens a game. |
 | A new member is awaiting approval | Commissioners | Someone asks to join. |
 | A game is waiting for commissioner review | Commissioners, other than the one who sent it | A player sends a game for review. |
 
 Game emails carry the player's name and a link, never scores. Turning off email
-notifications on **Account** stops every email except sign-in codes.
+notifications on **Account** stops every email except sign-in and deletion codes.
+
+If a deletion code arrives that you didn't ask for, don't enter it or pass it on. Someone
+else may be signed in as you: open **Account** and choose **Sign out everywhere**.
 
 ## Privacy
 
@@ -567,8 +594,9 @@ notifications on **Account** stops every email except sign-in codes.
 | The sign-in code doesn't arrive. | Wait a minute and check your spam folder. Then choose **Use a different email or resend** to request another. |
 | "That code is wrong or has expired." | Codes last 10 minutes and work only on the sign-in page that asked for them. Request a new one and enter it on the same page. |
 | "Too many attempts. Wait a while and try again." | You've hit a sign-in limit. Wait an hour or so, then try again. |
-| "This invite link is invalid or has expired." | Ask a commissioner for a new link. |
-| "That name is taken in this league." | Choose another display name. |
+| "This invite link is invalid or has expired." | The link expired, was revoked, or has been used by as many people as it allows. Ask a commissioner for a new link. |
+| "That name is taken in this league." | Another member has that name, or changed away from it in the last 90 days. Choose another display name. |
+| "You've changed your name too many times lately." | Five names you used before are still kept for you. Change back to one of them, or wait until the oldest has been free for 90 days. |
 | **Season game** can't be selected. | You need to be on an approved team in the active season. The form says which part is missing. |
 | "That game changed after you loaded it, so nothing was saved." | Someone corrected the game meanwhile. Check the latest numbers, then act again. |
 | "The window to confirm that game closed, so it won't count." | The deadline passed. Record the game again if it should count. |

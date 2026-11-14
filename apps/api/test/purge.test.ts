@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { findOrCreateUser } from '../src/auth/otp.ts';
 import { createSession } from '../src/auth/sessions.ts';
@@ -268,6 +268,56 @@ describe('users', () => {
   });
 });
 
+describe('held names', () => {
+  async function renameCommissioner(displayName: string): Promise<void> {
+    const ana = await signIn(api.db, clock, 'ana@example.com');
+    const res = await fetch(`${api.baseUrl}/api/me`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${ana.token}` },
+      body: JSON.stringify({ displayName }),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  const heldNames = async () =>
+    (
+      await api.db.execute<{ name_key: string }>(
+        sql`select name_key from released_names order by name_key`,
+      )
+    ).map((r) => r.name_key);
+
+  it('deletes a held name 90 days after it was given up and keeps a newer one', async () => {
+    await createLeague(api.db, clock, {
+      name: 'Basement',
+      email: 'ana@example.com',
+      displayName: 'Ana',
+    });
+    await renameCommissioner('Anna');
+    clock.advance(DAY);
+    await renameCommissioner('Annie');
+    clock.advance(89 * DAY);
+
+    const { purged } = await purge();
+
+    expect(purged.heldNames).toBe(1);
+    expect(await heldNames()).toEqual(['anna']);
+  });
+
+  it('keeps a held name 1 s before its 90 days are up', async () => {
+    await createLeague(api.db, clock, {
+      name: 'Basement',
+      email: 'ana@example.com',
+      displayName: 'Ana',
+    });
+    await renameCommissioner('Anna');
+    clock.advance(90 * DAY - SECOND);
+
+    await purge();
+
+    expect(await heldNames()).toEqual(['ana']);
+  });
+});
+
 describe('batching', () => {
   it('stops after the batch budget and reports that more remains', async () => {
     await signIn(api.db, clock, 'a@example.com');
@@ -287,7 +337,7 @@ describe('batching', () => {
     clock.advance(31 * DAY);
 
     expect(await purge()).toEqual({
-      purged: { sessions: 1, codes: 1, rateLimits: 2, mail: 1, users: 2 },
+      purged: { sessions: 1, codes: 1, rateLimits: 2, mail: 1, users: 2, heldNames: 0 },
       done: true,
     });
   });

@@ -191,6 +191,30 @@ export const memberships = pgTable(
   ],
 );
 
+// A name an approved member gave up by renaming, held for them: for NAME_HOLD_MS
+// (domain/membership.ts) after `released_at`, nobody else in the league can take it, so
+// nobody can step into a name the league still knows someone else by. One row per name in a
+// league; a later release replaces a lapsed one. Only the key is kept, and a member's rows are
+// erased with their account.
+export const releasedNames = pgTable(
+  'released_names',
+  {
+    id: id(),
+    leagueId: uuid('league_id')
+      .notNull()
+      .references(() => leagues.id),
+    nameKey: text('name_key').notNull(),
+    membershipId: uuid('membership_id')
+      .notNull()
+      .references(() => memberships.id, { onDelete: 'cascade' }),
+    releasedAt: ts('released_at').notNull(),
+  },
+  (t) => [
+    unique('released_names_league_name_key_unique').on(t.leagueId, t.nameKey),
+    index('released_names_membership_id_idx').on(t.membershipId),
+  ],
+);
+
 // The league's log of commissioner actions, visible to every member. Append-only: triggers
 // (migration 0004) refuse UPDATE, DELETE, and TRUNCATE, even for the table's owner. Only a
 // superuser can switch them off, so the production app role (delivery slice 8) must be
@@ -217,7 +241,9 @@ export const auditEvents = pgTable(
   (t) => [index('audit_events_league_id_id_idx').on(t.leagueId, t.id)],
 );
 
-// A shareable join link. Only the SHA-256 of its token is stored; the link is shown once.
+// A shareable join link. Only the SHA-256 of its token is stored; the link is shown once. It
+// admits at most `max_joins` people (INVITE_MAX_JOINS_DEFAULT and _LIMIT in packages/core),
+// counted in `join_count` as each joins, so a leaked link has a bounded use.
 export const invites = pgTable(
   'invites',
   {
@@ -232,8 +258,14 @@ export const invites = pgTable(
     createdAt: ts('created_at').notNull(),
     expiresAt: ts('expires_at').notNull(),
     revokedAt: ts('revoked_at'),
+    maxJoins: integer('max_joins').notNull().default(10),
+    joinCount: integer('join_count').notNull().default(0),
   },
-  (t) => [index('invites_league_id_idx').on(t.leagueId)],
+  (t) => [
+    index('invites_league_id_idx').on(t.leagueId),
+    check('invites_max_joins_range', sql`${t.maxJoins} between 1 and 50`),
+    check('invites_join_count_range', sql`${t.joinCount} between 0 and ${t.maxJoins}`),
+  ],
 );
 
 // A league's season (SPEC §3.7), moved through draft → active → ended → finalized only by

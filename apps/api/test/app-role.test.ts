@@ -6,7 +6,7 @@ import { FixedClock } from '../src/clock.ts';
 import { provisionAppRole, provisionBackupRole } from '../src/db/migrate.ts';
 import { purgeStale } from '../src/domain/purge.ts';
 import { freshDatabase } from './support/db.ts';
-import { client, createLeague, signIn } from './support/league.ts';
+import { client, createLeague, deletionCode, signIn } from './support/league.ts';
 import { startApi } from './support/server.ts';
 
 const INSUFFICIENT_PRIVILEGE = '42501';
@@ -80,7 +80,7 @@ describe('the app role provisioned by migrate', () => {
       const league = await call('GET', `/api/leagues/${leagueId}`, { as: ana });
       const deleted = await call('DELETE', '/api/me', {
         as: ana,
-        body: { keepDisplayName: false },
+        body: { keepDisplayName: false, ...(await deletionCode(api, ana)) },
       });
 
       expect(league.status).toBe(200);

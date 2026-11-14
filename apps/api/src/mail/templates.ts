@@ -6,6 +6,7 @@ import { open, seal } from '../crypto.ts';
 // or tokens.
 
 export const SIGN_IN_CODE = 'sign_in_code';
+export const DELETE_ACCOUNT_CODE = 'delete_account_code';
 export const MEMBER_PENDING = 'member_pending';
 export const GAME_REVISION = 'game_revision';
 export const OVERRIDE_REQUESTED = 'override_requested';
@@ -63,6 +64,7 @@ export function renderEmail(
   ctx: { key: Buffer; now: Date },
 ): Render {
   if (template === SIGN_IN_CODE) return renderSignInCode(params, ctx);
+  if (template === DELETE_ACCOUNT_CODE) return renderDeleteAccountCode(params, ctx);
   if (template === MEMBER_PENDING) return renderMemberPending(params);
   if (template === GAME_REVISION) return renderGameRevision(params);
   if (template === OVERRIDE_REQUESTED) return renderOverrideRequested(params);
@@ -115,13 +117,42 @@ function renderMemberPending(params: unknown): Render {
   };
 }
 
-function renderSignInCode(params: unknown, ctx: { key: Buffer; now: Date }): Render {
+// The mailed code of either kind (their params are the same), or why it can't be sent.
+function mailedCode(
+  params: unknown,
+  ctx: { key: Buffer; now: Date },
+): string | Exclude<Render, Rendered> {
   const parsed = SignInCodeParams.safeParse(params);
   if (!parsed.success) return { drop: 'BAD_PARAMS' };
   // A code the user can no longer redeem isn't worth sending.
   if (ctx.now.getTime() >= new Date(parsed.data.expiresAt).getTime()) return { drop: 'EXPIRED' };
   const code = open(ctx.key, parsed.data.code);
-  if (code === null) return { drop: 'UNREADABLE' };
+  return code === null ? { drop: 'UNREADABLE' } : code;
+}
+
+// Sent to a signed-in user who asked to delete their account. It says what the code does, so
+// nobody enters or passes one on thinking it only signs them in.
+function renderDeleteAccountCode(params: unknown, ctx: { key: Buffer; now: Date }): Render {
+  const code = mailedCode(params, ctx);
+  if (typeof code !== 'string') return code;
+  return {
+    subject: 'Your Beer Die League account deletion code',
+    text: [
+      `Your code to delete your Beer Die League account is ${formatSignInCode(code)}.`,
+      '',
+      'Entering it on the Account screen where you asked for it deletes your account for good.',
+      'It expires in 10 minutes and works nowhere else.',
+      '',
+      "If you didn't ask to delete your account, don't enter this code or give it to anyone.",
+      'Someone else may be signed in as you: open Account and choose "Sign out everywhere".',
+      '',
+    ].join('\n'),
+  };
+}
+
+function renderSignInCode(params: unknown, ctx: { key: Buffer; now: Date }): Render {
+  const code = mailedCode(params, ctx);
+  if (typeof code !== 'string') return code;
   return {
     subject: 'Your Beer Die League sign-in code',
     text: [

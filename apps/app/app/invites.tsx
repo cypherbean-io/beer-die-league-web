@@ -1,8 +1,13 @@
-import type { MyMembership } from '@beer-die/core';
+import {
+  CreateInviteBody,
+  INVITE_MAX_JOINS_DEFAULT,
+  INVITE_MAX_JOINS_LIMIT,
+  type MyMembership,
+} from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { createInvite, listInvites, revokeInvite } from '../src/api/client';
 import { currentMembership, useMe } from '../src/api/hooks';
 import { Button } from '../src/ui';
@@ -26,13 +31,17 @@ function InviteManager({ membership }: { membership: MyMembership }) {
   const { leagueId } = membership;
   // The server returns a link's token only once, so it lives in component state only.
   const [url, setUrl] = useState<string | null>(null);
+  const [maxJoinsText, setMaxJoinsText] = useState(String(INVITE_MAX_JOINS_DEFAULT));
+  // Same validator as the server, for instant feedback; the server checks again.
+  const parsed = CreateInviteBody.safeParse({ maxJoins: Number(maxJoinsText) });
+  const maxJoins = maxJoinsText !== '' && parsed.success ? parsed.data.maxJoins : null;
   const invites = useQuery({
     queryKey: ['invites', leagueId],
     queryFn: () => listInvites(leagueId),
   });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['invites', leagueId] });
   const create = useMutation({
-    mutationFn: () => createInvite(leagueId),
+    mutationFn: (limit: number) => createInvite(leagueId, limit),
     onSuccess: (created) => setUrl(created.url),
     onSettled: refresh,
   });
@@ -45,14 +54,29 @@ function InviteManager({ membership }: { membership: MyMembership }) {
     <ScrollView contentContainerStyle={styles.container}>
       <Stack.Screen options={{ title: 'Invite players' }} />
       <Text>
-        Anyone with an invite link can ask to join, and you approve each request. Links expire after
-        14 days.
+        Anyone with an invite link can ask to join, and you approve each request. A link stops
+        working once the number of people you set have joined through it, or after 14 days.
       </Text>
+      <Text nativeID="invite-max-joins-label">How many people can join with this link</Text>
+      <TextInput
+        testID="invite-max-joins-input"
+        aria-labelledby="invite-max-joins-label"
+        style={styles.input}
+        value={maxJoinsText}
+        onChangeText={(text) => setMaxJoinsText(text.replace(/[^0-9]/g, ''))}
+        inputMode="numeric"
+        maxLength={2}
+      />
+      {maxJoins === null && (
+        <Text testID="invite-max-joins-hint" style={styles.muted}>
+          Enter a number from 1 to {INVITE_MAX_JOINS_LIMIT}.
+        </Text>
+      )}
       <Button
         testID="create-invite"
         label={create.isPending ? 'Creating…' : 'Create invite link'}
-        disabled={create.isPending}
-        onPress={() => create.mutate()}
+        disabled={maxJoins === null || create.isPending}
+        onPress={() => maxJoins !== null && create.mutate(maxJoins)}
       />
       {create.isError && <Text style={styles.error}>Could not create a link. Try again.</Text>}
       {url && (
@@ -68,7 +92,8 @@ function InviteManager({ membership }: { membership: MyMembership }) {
       {invites.data?.map((invite) => (
         <View key={invite.id} style={styles.row} testID="active-invite">
           <Text style={styles.grow}>
-            Created {formatDate(invite.createdAt)}, expires {formatDate(invite.expiresAt)}
+            Created {formatDate(invite.createdAt)}, expires {formatDate(invite.expiresAt)}.{' '}
+            {invite.joinCount} of {invite.maxJoins} joins used.
           </Text>
           <Button
             label="Revoke"
@@ -88,6 +113,7 @@ const styles = StyleSheet.create({
   heading: { fontSize: 18, fontWeight: '700', marginTop: 8 },
   card: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, gap: 8 },
   url: { fontFamily: 'monospace' },
+  input: { borderWidth: 1, borderColor: '#999', borderRadius: 6, padding: 10, fontSize: 16 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   grow: { flex: 1 },
   muted: { color: '#555' },

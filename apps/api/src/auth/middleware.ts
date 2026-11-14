@@ -3,8 +3,11 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Clock } from '../clock.ts';
 import type { Db } from '../db/client.ts';
 import { type Actor, resolveMembership } from '../domain/membership.ts';
+import { hmacHex } from '../crypto.ts';
 import { ApiError, idParam } from '../http.ts';
-import { resolveSession, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
+import { clientIp } from './clientIp.ts';
+import { resolveSession, SESSION_MAX_MS, type SessionAuth, TOKEN_PATTERN } from './sessions.ts';
+import type { Throttle, ThrottleBucket } from './throttle.ts';
 
 // `requestId` is set by the access log before anything else runs.
 export type AuthEnv = { Variables: { requestId?: string; auth?: SessionAuth } };
@@ -16,9 +19,9 @@ export const SESSION_COOKIE = 'session';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-// The server enforces the 30-day idle expiry. The cookie lives as long as browsers allow,
+// The server enforces the 30-day idle expiry. The cookie lives as long as the session can,
 // so an active user isn't signed out 30 days after signing in.
-const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+const COOKIE_MAX_AGE_S = SESSION_MAX_MS / 1000;
 
 const cookieOptions = {
   httpOnly: true,
@@ -58,8 +61,48 @@ export function csrfGuard(appOrigin: string): MiddlewareHandler {
   };
 }
 
-// Resolves the caller's session from `Authorization: Bearer` (native) or the cookie (web).
-export function requireSession(deps: { db: Db; clock: Clock }): MiddlewareHandler<AuthEnv> {
+// Thrown once a throttle bucket is spent. Retry-After goes on the context, which the error
+// handler answers from.
+function tooManyRequests(c: Context, retryAfterS: number): ApiError {
+  c.header('Retry-After', String(retryAfterS));
+  return new ApiError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.');
+}
+
+// Throttles by client address, before anything touches the database. The address is keyed
+// by an HMAC, so the process holds no raw addresses either.
+export function throttleAddress(
+  deps: { throttle: Throttle; config: { authSecret: string; trustProxy: boolean } },
+  bucket: Extract<ThrottleBucket, 'ip' | 'auth-ip'>,
+): MiddlewareHandler {
+  return async (c, next) => {
+    const address = clientIp(c, deps.config.trustProxy);
+    const key = hmacHex(deps.config.authSecret, `throttle:${address}`);
+    const retryAfterS = deps.throttle.check(bucket, key);
+    if (retryAfterS > 0) throw tooManyRequests(c, retryAfterS);
+    await next();
+  };
+}
+
+// Throttles a signed-in user's requests to the routes it is mounted on. Runs after
+// requireSession.
+export function throttleUser(
+  deps: { throttle: Throttle },
+  bucket: Extract<ThrottleBucket, 'user' | 'stats-user'>,
+): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    const retryAfterS = deps.throttle.check(bucket, c.get('auth')!.userId);
+    if (retryAfterS > 0) throw tooManyRequests(c, retryAfterS);
+    await next();
+  };
+}
+
+// Resolves the caller's session from `Authorization: Bearer` (native) or the cookie (web),
+// and counts the request against the user's overall limit.
+export function requireSession(deps: {
+  db: Db;
+  clock: Clock;
+  throttle: Throttle;
+}): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
     const unauthenticated = new ApiError(401, 'UNAUTHENTICATED', 'Sign in to continue');
     const header = c.req.header('authorization');
@@ -74,6 +117,8 @@ export function requireSession(deps: { db: Db; clock: Clock }): MiddlewareHandle
     });
     if (!auth) throw unauthenticated;
     c.set('auth', auth);
+    const retryAfterS = deps.throttle.check('user', auth.userId);
+    if (retryAfterS > 0) throw tooManyRequests(c, retryAfterS);
     await next();
   };
 }

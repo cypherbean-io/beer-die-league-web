@@ -105,7 +105,7 @@ apps/api/                 Hono HTTP API + worker + CLI (Node 26, runs .ts via bu
   src/cli.ts              create-league, promote-commissioner (bootstrap only)
   src/clock.ts            Clock interface; real + fixed implementations
   src/db/schema.ts        Drizzle schema; src/db/migrations/ (drizzle-kit, committed SQL)
-  src/auth/               otp.ts, sessions.ts, middleware.ts, rateLimit.ts
+  src/auth/               otp.ts, sessions.ts, middleware.ts, rateLimit.ts, throttle.ts
   src/domain/             games.ts (state machine; THE invariant), seasons.ts, teams.ts,
                           membership.ts, deletion.ts, audit.ts
   src/stats/queries.ts    SQL aggregation over counted results
@@ -172,11 +172,12 @@ Anything else needs the user to approve it first.
 | --- | --- |
 | `users` | `email citext unique null` (null after deletion), `created_at`, `deleted_at` |
 | `auth_codes` | `email`, `request_token_sha256 unique`, `code_hmac`, `expires_at`, `attempts`, `consumed_at`. One row per code request, found by its request token, never by email; a new request leaves the email's earlier codes alone. |
-| `sessions` | `user_id`, `token_sha256 unique`, `client ('web'\|'native')`, `last_used_at`, `expires_at` (30 days after last use) |
+| `sessions` | `user_id`, `token_sha256 unique`, `client ('web'\|'native')`, `created_at`, `last_used_at`, `expires_at` (30 days after last use, and never more than 90 days after `created_at`) |
 | `rate_limits` | `key` (`email:<hmac>` or `ip:<hmac>`), `window_start`, `count` |
 | `leagues` | `name`, rules (`target_score` ≥1 default 11, `win_by` ≥1 default 2, `sink_points` ≥0 default 0, `sink_ends_game` default false), `confirmation_window_days` 1–30 default 7, `exhibition_correction_window_days` 0–365 default 30 |
 | `memberships` | `league_id`, `user_id`, `display_name`, `name_key` (NFKC + lowercase; `unique(league_id, name_key)`), `role ('member'\|'commissioner')`, `status ('pending'\|'approved'\|'removed'\|'left'\|'deleted')`, `email_notifications bool`, `keep_name_on_delete bool`. Games reference **memberships**, not users. |
-| `invites` | `league_id`, `token_sha256`, `created_by`, `expires_at` (default 14 days), `revoked_at` |
+| `released_names` | `league_id`, `name_key`, `membership_id`, `released_at`; `unique(league_id, name_key)`. A name an approved member gave up by renaming, which nobody else in the league can take for 90 days. |
+| `invites` | `league_id`, `token_sha256`, `created_by`, `expires_at` (default 14 days), `revoked_at`, `max_joins` 1–50 default 10, `join_count` (never above `max_joins`) |
 | `seasons` | `league_id`, `name`, `status ('draft'\|'active'\|'ended'\|'finalized')`, `started_at`, `ended_at`, `finalized_at`, `standings_config jsonb`. A partial unique index allows at most one `active` season per league. |
 | `season_teams` | `season_id`, `name`, `status ('proposed'\|'accepted'\|'approved'\|'rejected'\|'withdrawn')`, `proposed_by` |
 | `team_roster` | `team_id`, `season_id`, `membership_id`, `valid_from`, `valid_to null`. A partial unique index on `(season_id, membership_id) where valid_to is null` enforces one team per player per season. |
@@ -417,11 +418,11 @@ not in the future, and the season constraints in 3.7.
 
 | Group | Endpoints |
 | --- | --- |
-| Auth | `POST /api/auth/code`, `POST /api/auth/verify`, `POST /api/auth/logout` |
-| Me | `GET /api/me`, `PATCH /api/me`, `DELETE /api/me { keepDisplayName }` |
+| Auth | `POST /api/auth/code`, `POST /api/auth/verify`, `POST /api/auth/logout`, `POST /api/auth/logout-all` |
+| Me | `GET /api/me`, `PATCH /api/me`, `POST /api/me/deletion-code`, `DELETE /api/me { keepDisplayName, code, requestToken }` |
 | Invites | `POST /api/invites/:token/join { displayName }` |
 | League | `GET /leagues/:id`, `PATCH /leagues/:id/rules`, `PATCH /leagues/:id/settings` |
-| Members | `GET /members`, `POST /members/:mid/{approve,reject,remove,role}`, `POST /invites`, `DELETE /invites/:iid`, `POST /leave` |
+| Members | `GET /members`, `POST /members/:mid/{approve,reject,remove,role}`, `POST /invites { maxJoins? }`, `GET /invites`, `DELETE /invites/:iid`, `POST /leave` |
 | Seasons | `POST /seasons`, `POST /seasons/:sid/{start,end}`, `PATCH /seasons/:sid/standings-config`, `GET /seasons/:sid/standings` |
 | Teams | `POST /seasons/:sid/teams`, `POST /teams/:tid/{accept,approve,reject,withdraw}`, `PUT /teams/:tid/roster` |
 | Games | `POST /games`, `GET /games`, `GET /games/:gid`, `POST /games/:gid/revisions`, `POST /games/:gid/revisions/:rid/{confirm,force-confirm,override}` |
@@ -452,8 +453,8 @@ All groups after Invites are under `/api/leagues/:id`.
 - **Standings.**
 - **Commissioner screens:** pending members, invite link, rules and settings, seasons and
   teams, the override queue, and force-confirm on the game page.
-- **Account:** display name, email-notification toggle, sign out, and delete account
-  (with a keep-name option).
+- **Account:** display name, email-notification toggle, sign out, sign out everywhere,
+  and delete account (with a keep-name option, confirmed by an emailed deletion code).
 
 **Drafts and retries**
 
@@ -485,6 +486,24 @@ All groups after Invites are under `/api/leagues/:id`.
   attempts per hour per IP. There is no verify limit per email, which anyone could fill
   for someone else's address. IPs are stored only as an HMAC.
 
+**Request throttling**
+
+- In front of every route, counted in the API process's memory, so a refused request
+  costs no database work and no body is read for it:
+
+  | Counted per | Requests a minute |
+  | --- | --- |
+  | Address, everything | 1200 |
+  | Address, `/api/auth/*` | 60 |
+  | Signed-in user, everything | 300 |
+  | Signed-in user, stats and standings reads | 60 |
+
+- A refusal is `429 RATE_LIMITED` with a `Retry-After` header. Addresses are counted as
+  the hourly limits count them (an IPv6 /64 is one client) and keyed by an HMAC.
+- These limits bound how fast one client can drive the API. The limits that must hold
+  exactly (codes, joins, game writes) stay in `rate_limits`.
+- The counters are per API process, and v1 runs one. They reset when it restarts.
+
 **Sessions**
 
 - 32 random bytes, encoded base64url; only their SHA-256 is stored.
@@ -492,6 +511,23 @@ All groups after Invites are under `/api/leagues/:id`.
   request authenticated by cookie must send `Content-Type: application/json` with an
   `Origin` matching `APP_ORIGIN`.
 - **Native:** `Authorization: Bearer` token.
+- **Lifetime:** a session ends 30 days after its last use, and 90 days after sign-in
+  however much it is used. `expires_at` holds the earlier of the two. The cookie's
+  `Max-Age` is the same 90 days.
+- **Sign out everywhere:** `POST /api/auth/logout-all` revokes every session of the
+  caller.
+
+**Deletion codes**
+
+- A session alone can't delete its account. `POST /api/me/deletion-code` mails a code to
+  the session's own address and returns `202 { requestToken }`, and `DELETE /api/me` must
+  carry that code and token.
+- It is a code like a sign-in code (same length, TTL, 5 attempts, request token), under
+  the same hourly request limits, but **bound to its purpose**: the purpose is part of the
+  stored HMAC, so a sign-in code can't delete an account and a deletion code can't sign
+  in. Its email says what it does.
+- A wrong code is counted and gets `403 INVALID_CODE`. A deletion refused for another
+  reason (`LAST_COMMISSIONER`) leaves the code unused.
 
 **Email**
 
@@ -499,7 +535,7 @@ All groups after Invites are under `/api/leagues/:id`.
   attempts with exponential backoff.
 - Sending never blocks a request or happens inside its transaction.
 - Templates:
-  - Sign-in code.
+  - Sign-in code, and account-deletion code.
   - "{name} submitted/corrected a game with you": sent to the other opted-in players,
     with a link and no stats.
   - "New member awaiting approval" and "Override requested", sent to commissioners.
@@ -567,16 +603,19 @@ There is no date of birth, no location, and no payment data.
 | Account enumeration | `/auth/code` always returns `202` with the same body and timing class |
 | Brute-forcing sign-in codes | 40-bit codes, 5 attempts per code, 10-minute TTL, 5 codes per hour per email, rate limits per IP, constant-time comparison |
 | Locking someone out of signing in | A code is reached only with its request token, so nobody else can use up its attempts or invalidate it. **Residual:** the per-email request cap bounds the mail an address can be sent, so it counts everyone's requests; filling it holds off new codes for that address for up to an hour. |
-| Session theft | httpOnly + Secure cookie, only the token hash is stored, 30-day idle expiry, logout and account deletion revoke sessions |
+| Session theft | httpOnly + Secure cookie, only the token hash is stored, 30-day idle expiry, 90-day absolute expiry, logout and account deletion revoke sessions, and "sign out everywhere" revokes all of a user's. Deleting the account also needs a code mailed for that purpose, so a stolen token can't do it. **Residual:** until it expires or is revoked, a stolen token can do everything else its user can. |
 | CSRF | SameSite=Lax cookie, plus the `Origin` and JSON content-type checks on writes. Bearer tokens are not subject to CSRF. |
 | XSS | React escaping; no `dangerouslySetInnerHTML`. Display names: NFKC-normalized, 2–24 characters (letters, digits, space, `-_.'`). Caddy sets a CSP (`default-src 'self'`, `connect-src 'self'`, inline styles allowed for react-native-web) and `X-Content-Type-Options`. |
 | Invite token leaks through the Referer header | `Referrer-Policy: no-referrer` and no third-party assets. Tokens are revocable and expire, and joining still requires approval. |
+| A leaked invite link used to flood the league | A link admits at most `max_joins` people (the commissioner chooses 1–50, default 10) and then stops working, which bounds the names it can reserve and the "awaiting approval" mail it can send. The limit is claimed in the join's own transaction, so concurrent joins can't pass it and a refused join doesn't use it up. |
+| Impersonation by taking a name someone gave up | History shows each member's current name, so a name is never just free: a rename holds the old name for the member who gave it up for 90 days (`released_names`), against renames and joins alike, and they can take it back at any time. At most 5 names are held per member, so renaming can't take names out of use. **Residual:** after 90 days, or once the member deletes their account, the name is free again. |
 | IDOR / cross-league access | `leagueId` always comes from the resolved membership; non-members get `404`; role checks happen in the domain layer |
 | Sock-puppet accounts faking games | Only approved members can appear in games; commissioners approve every join, and each approval and role change is audited |
 | Commissioner abuse (force-confirm, overrides on their own games) | Allowed by decision, but every such action is audited and visible to all members, flagged when the commissioner played |
 | Duplicate or replayed submissions | Idempotency key plus a payload hash |
 | Race conditions | Game row lock; one transition function |
 | Large or malformed payloads | 16 KB body limit; zod schemas with strict integer bounds |
+| Request floods | In-memory throttling per address and per user, applied before the body is read or the database touched; stricter for `/api/auth/*` and for stats reads. **Residual:** it is per address, so it doesn't stop a flood from many addresses. |
 
 **Logging and redaction**
 
@@ -593,7 +632,8 @@ There is no date of birth, no location, and no payment data.
 - Commissioners see emails only for members pending approval.
 - **Account deletion** erases the email, sessions, codes, and outbox rows, and voids the
   member's open revisions. The display name becomes "Deleted player #N" unless the
-  member chose to keep it. A kept name stays reserved. Members who left, were removed, or
+  member chose to keep it. A kept name stays reserved. The names held for them from earlier
+  renames are erased and so become free. Members who left, were removed, or
   deleted their account are marked as former members wherever their name appears on games,
   stats, and rosters.
   Confirmed games remain, so other players' records don't change.
@@ -680,7 +720,14 @@ sinks don't end the game):
 - Wrong attempts without a code's request token don't count against it, and the right
   code with another request's token is refused.
 - The 6th code request in an hour gets `429`.
+- The 61st request to `/api/auth/*` in a minute from one address gets `429` with
+  `Retry-After`, and writes nothing to the database.
+- A user's requests past the per-user limit, and stats reads past the stats limit, get
+  `429`; other users and other routes are unaffected.
 - Logout revokes the session.
+- A session in constant use is refused 90 days after sign-in, and its stored expiry never
+  passes that.
+- Sign out everywhere revokes the user's sessions on every device and nobody else's.
 - The web cookie is httpOnly, Secure, and SameSite=Lax.
 - A cookie-authenticated write with a foreign or missing `Origin` gets `403`.
 - A bearer token works for `client: 'native'`.
@@ -691,7 +738,14 @@ sinks don't end the game):
 - Joining by invite creates a pending membership. A pending member gets `404` on league
   data; after approval they get access.
 - An expired or revoked invite is rejected.
+- An invite stops working once `max_joins` people have joined through it, including under
+  a concurrent burst, and is then indistinguishable from an unknown one. A refused join
+  doesn't count; a join later rejected by a commissioner does.
 - Display names are unique case-insensitively and after NFKC normalization.
+- A name an approved member gave up is refused to other members and to joiners until 90
+  days have passed, including when the two renames race; its owner can take it back. A
+  rename that would hold a sixth name is refused. Deleting the account erases the holds,
+  and the worker purges lapsed ones.
 - A table-driven test over **every** league route shows that a member of league X
   gets `404` for league Y's resources.
 - A non-commissioner calling a commissioner route gets `403`.
@@ -797,6 +851,10 @@ sinks don't end the game):
 - Deleting an account erases the email, sessions, and outbox rows, and voids open
   revisions. Confirmed games remain under "Deleted player #N".
 - With `keepDisplayName`, the name stays on games and stays reserved.
+- Deleting needs the mailed deletion code: none, a wrong one, another user's, an expired
+  one, or a sign-in code gets `403` or `422` and deletes nothing, and a deletion code
+  can't sign in. The 5th wrong attempt invalidates it. A deletion refused for the last
+  commissioner leaves the code usable.
 - Signing up again with the same email creates a new, unlinked user.
 - Removing a member voids their open revisions, keeps their confirmed games, and closes
   their roster row.
