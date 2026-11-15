@@ -72,8 +72,9 @@ export const sessions = pgTable(
     tokenSha256: text('token_sha256').notNull().unique(),
     client: text('client', { enum: ['web', 'native'] }).notNull(),
     createdAt: ts('created_at').notNull(),
+    // The last use recorded; one is recorded at most once an hour (auth/sessions.ts).
     lastUsedAt: ts('last_used_at').notNull(),
-    // 30 days after last use.
+    // 30 days after the last recorded use, and never more than 90 days after sign-in.
     expiresAt: ts('expires_at').notNull(),
   },
   (t) => [
