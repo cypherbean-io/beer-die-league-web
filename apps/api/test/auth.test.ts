@@ -547,6 +547,53 @@ describe('sessions', () => {
     expect(res.status).toBe(200);
   });
 
+  // The stored session, as milliseconds since the epoch.
+  async function storedSession(): Promise<{ lastUsedAt: number; expiresAt: number }> {
+    const [row] = await api.db.execute<{ last_used_at: string; expires_at: string }>(
+      sql`select last_used_at, expires_at from sessions`,
+    );
+    return {
+      lastUsedAt: new Date(row!.last_used_at).getTime(),
+      expiresAt: new Date(row!.expires_at).getTime(),
+    };
+  }
+
+  it('leaves the stored session untouched by a request within an hour of its last recorded use', async () => {
+    const signedInAt = clock.now().getTime();
+    const cookie = await signInWeb('ana@example.com');
+    clock.advance(HOUR - SECOND);
+
+    const res = await getMe({ cookie });
+
+    expect(res.status).toBe(200);
+    expect(await storedSession()).toEqual({
+      lastUsedAt: signedInAt,
+      expiresAt: signedInAt + 30 * DAY,
+    });
+  });
+
+  it('records a use an hour after the last recorded one, and slides the expiry from it', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    clock.advance(HOUR);
+    const usedAt = clock.now().getTime();
+
+    const res = await getMe({ cookie });
+
+    expect(res.status).toBe(200);
+    expect(await storedSession()).toEqual({ lastUsedAt: usedAt, expiresAt: usedAt + 30 * DAY });
+  });
+
+  it('expires a session 30 days after its last recorded use, whatever it did in the hour after', async () => {
+    const cookie = await signInWeb('ana@example.com');
+    clock.advance(30 * MINUTE);
+    expect((await getMe({ cookie })).status).toBe(200);
+    clock.advance(30 * DAY - 30 * MINUTE);
+
+    const res = await getMe({ cookie });
+
+    expect(res.status).toBe(401);
+  });
+
   it('expires a session 90 days after sign-in, however recently it was used', async () => {
     const cookie = await signInWeb('ana@example.com');
     for (let day = 20; day <= 80; day += 20) {

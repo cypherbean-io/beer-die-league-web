@@ -9,6 +9,9 @@ export const SESSION_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 // However much a session is used, it ends this long after sign-in, so a stolen token stops
 // working even if its thief keeps it busy.
 export const SESSION_MAX_MS = 90 * 24 * 60 * 60 * 1000;
+// How often a session's use is recorded. The idle expiry runs from the last recorded use, so
+// a session can end up to this long before 30 days after its last request, never after.
+export const SESSION_TOUCH_MS = 60 * 60 * 1000;
 
 // 32 random bytes, base64url: always 43 characters.
 export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -37,22 +40,26 @@ export async function createSession(
   return token;
 }
 
-// Resolves a live session for the token and slides its idle expiry, never past the session's
-// absolute lifetime. `expires_at` therefore always holds the earlier of the two, which is all
-// the purge needs to read. A token is accepted only over the transport its client uses: a
-// cookie for web, a bearer header for native.
+// Resolves a live session for the token. A token is accepted only over the transport its
+// client uses: a cookie for web, a bearer header for native.
+//
+// A use is recorded, and the idle expiry slid from it, at most once per SESSION_TOUCH_MS, so
+// most requests only read the row: every authenticated request comes through here, and a
+// screen's requests arrive together. The expiry never passes the session's absolute lifetime,
+// so `expires_at` always holds the earlier of the two, which is all the purge needs to read.
 export async function resolveSession(
   db: Db,
   input: { token: string; client: SessionClient; now: Date },
 ): Promise<SessionAuth | null> {
-  const idleExpiry = new Date(input.now.getTime() + SESSION_IDLE_MS).toISOString();
   const [row] = await db
-    .update(sessions)
-    .set({
-      lastUsedAt: input.now,
-      expiresAt: sql`least(${idleExpiry}::timestamptz, ${sessions.createdAt} + make_interval(secs => ${SESSION_MAX_MS / 1000}::float8))`,
+    .select({
+      sessionId: sessions.id,
+      userId: users.id,
+      email: users.email,
+      lastUsedAt: sessions.lastUsedAt,
     })
-    .from(users)
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
     .where(
       and(
         eq(sessions.tokenSha256, sha256Hex(input.token)),
@@ -61,13 +68,25 @@ export async function resolveSession(
         // Also checked directly: a session from before the absolute lifetime existed can hold
         // an expiry beyond it.
         gt(sessions.createdAt, new Date(input.now.getTime() - SESSION_MAX_MS)),
-        eq(users.id, sessions.userId),
         isNull(users.deletedAt),
         isNotNull(users.email),
       ),
-    )
-    .returning({ sessionId: sessions.id, userId: users.id, email: users.email });
+    );
   if (!row?.email) return null;
+
+  if (input.now.getTime() - row.lastUsedAt.getTime() >= SESSION_TOUCH_MS) {
+    const idleExpiry = new Date(input.now.getTime() + SESSION_IDLE_MS).toISOString();
+    const [touched] = await db
+      .update(sessions)
+      .set({
+        lastUsedAt: input.now,
+        expiresAt: sql`least(${idleExpiry}::timestamptz, ${sessions.createdAt} + make_interval(secs => ${SESSION_MAX_MS / 1000}::float8))`,
+      })
+      .where(eq(sessions.id, row.sessionId))
+      .returning({ id: sessions.id });
+    // Revoked since it was read.
+    if (!touched) return null;
+  }
   return { sessionId: row.sessionId, userId: row.userId, email: row.email, client: input.client };
 }
 

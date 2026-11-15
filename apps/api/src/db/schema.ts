@@ -72,8 +72,9 @@ export const sessions = pgTable(
     tokenSha256: text('token_sha256').notNull().unique(),
     client: text('client', { enum: ['web', 'native'] }).notNull(),
     createdAt: ts('created_at').notNull(),
+    // The last use recorded; one is recorded at most once an hour (auth/sessions.ts).
     lastUsedAt: ts('last_used_at').notNull(),
-    // 30 days after last use.
+    // 30 days after the last recorded use, and never more than 90 days after sign-in.
     expiresAt: ts('expires_at').notNull(),
   },
   (t) => [
@@ -237,8 +238,13 @@ export const auditEvents = pgTable(
     details: jsonb('details').notNull(),
     createdAt: ts('created_at').notNull(),
   },
-  // The log is read newest first, paging on the (time-ordered) UUIDv7 id.
-  (t) => [index('audit_events_league_id_id_idx').on(t.leagueId, t.id)],
+  (t) => [
+    // The log is read newest first, paging on the (time-ordered) UUIDv7 id.
+    index('audit_events_league_id_id_idx').on(t.leagueId, t.id),
+    // A game's page reads the entries about that game alone (listGameAudit), also newest
+    // first, however long the league's log has grown.
+    index('audit_events_league_id_target_id_id_idx').on(t.leagueId, t.targetId, t.id),
+  ],
 );
 
 // A shareable join link. Only the SHA-256 of its token is stored; the link is shown once. It

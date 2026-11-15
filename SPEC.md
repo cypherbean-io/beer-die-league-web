@@ -172,7 +172,7 @@ Anything else needs the user to approve it first.
 | --- | --- |
 | `users` | `email citext unique null` (null after deletion), `created_at`, `deleted_at` |
 | `auth_codes` | `email`, `request_token_sha256 unique`, `code_hmac`, `expires_at`, `attempts`, `consumed_at`. One row per code request, found by its request token, never by email; a new request leaves the email's earlier codes alone. |
-| `sessions` | `user_id`, `token_sha256 unique`, `client ('web'\|'native')`, `created_at`, `last_used_at`, `expires_at` (30 days after last use, and never more than 90 days after `created_at`) |
+| `sessions` | `user_id`, `token_sha256 unique`, `client ('web'\|'native')`, `created_at`, `last_used_at` (recorded at most once an hour), `expires_at` (30 days after the last recorded use, and never more than 90 days after `created_at`) |
 | `rate_limits` | `key` (`email:<hmac>` or `ip:<hmac>`), `window_start`, `count` |
 | `leagues` | `name`, rules (`target_score` ≥1 default 11, `win_by` ≥1 default 2, `sink_points` ≥0 default 0, `sink_ends_game` default false), `confirmation_window_days` 1–30 default 7, `exhibition_correction_window_days` 0–365 default 30 |
 | `memberships` | `league_id`, `user_id`, `display_name`, `name_key` (NFKC + lowercase; `unique(league_id, name_key)`), `role ('member'\|'commissioner')`, `status ('pending'\|'approved'\|'removed'\|'left'\|'deleted')`, `email_notifications bool`, `keep_name_on_delete bool`. Games reference **memberships**, not users. |
@@ -513,7 +513,9 @@ All groups after Invites are under `/api/leagues/:id`.
 - **Native:** `Authorization: Bearer` token.
 - **Lifetime:** a session ends 30 days after its last use, and 90 days after sign-in
   however much it is used. `expires_at` holds the earlier of the two. The cookie's
-  `Max-Age` is the same 90 days.
+  `Max-Age` is the same 90 days. A use is recorded at most once an hour, so that most
+  requests only read the session: the 30 days run from the last recorded use, which can
+  be up to an hour before the last request, never after it.
 - **Sign out everywhere:** `POST /api/auth/logout-all` revokes every session of the
   caller.
 
@@ -727,6 +729,7 @@ sinks don't end the game):
 - Logout revokes the session.
 - A session in constant use is refused 90 days after sign-in, and its stored expiry never
   passes that.
+- A request within an hour of a session's last recorded use doesn't write to it.
 - Sign out everywhere revokes the user's sessions on every device and nobody else's.
 - The web cookie is httpOnly, Secure, and SameSite=Lax.
 - A cookie-authenticated write with a foreign or missing `Origin` gets `403`.
