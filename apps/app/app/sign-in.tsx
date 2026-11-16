@@ -3,7 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ApiRequestError, getMe, requestCode, verifyCode } from '../src/api/client';
+import { ApiRequestError, requestCode, verifyCode } from '../src/api/client';
+import { refreshMe } from '../src/api/hooks';
 
 // An invite token (32 random bytes, base64url). Anything else in `?invite=` is ignored, so
 // the parameter can only ever lead back to a join screen.
@@ -40,7 +41,7 @@ export default function SignIn() {
     mutationFn: () => verifyCode(email.trim(), code, requestToken),
     onSuccess: async () => {
       // /me carries the memberships Home needs, so load it before leaving this screen.
-      await queryClient.fetchQuery({ queryKey: ['me'], queryFn: getMe });
+      await refreshMe(queryClient);
       router.replace(invite && INVITE_TOKEN.test(invite) ? `/join/${invite}` : '/');
     },
   });

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError, getStandings } from '../../src/api/client';
-import { currentMembership, useMe } from '../../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { describeOrder, rankLabel } from '../../src/standings';
 import { percent } from '../../src/stats';
 
@@ -36,7 +36,7 @@ export default function Standings() {
 function SeasonStandings({ membership, seasonId }: { membership: MyMembership; seasonId: string }) {
   const { leagueId } = membership;
   const standings = useQuery({
-    queryKey: ['standings', leagueId, seasonId],
+    queryKey: queryKeys.seasonStandings(leagueId, seasonId),
     queryFn: () => getStandings(leagueId, seasonId),
   });
   const season = standings.data?.season;

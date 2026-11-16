@@ -27,7 +27,7 @@ import {
   getTeams,
   submitGame,
 } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { afterGameWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import {
   browserStorage,
   type DraftStore,
@@ -129,7 +129,7 @@ export default function RecordGame() {
 function CorrectionForm({ membership, gameId }: { membership: MyMembership; gameId: string }) {
   const { leagueId } = membership;
   const detail = useQuery({
-    queryKey: ['correction', leagueId, gameId],
+    queryKey: queryKeys.correction(leagueId, gameId),
     queryFn: () => getGame(leagueId, gameId),
     staleTime: Infinity,
     gcTime: 0,
@@ -175,20 +175,23 @@ function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormP
   const queryClient = useQueryClient();
   // Held from the first render: a correction names the revision whose numbers filled the form.
   const [base] = useState(correcting);
-  const league = useQuery({ queryKey: ['league', leagueId], queryFn: () => getLeague(leagueId) });
+  const league = useQuery({
+    queryKey: queryKeys.league(leagueId),
+    queryFn: () => getLeague(leagueId),
+  });
   const members = useQuery({
-    queryKey: ['members', leagueId],
+    queryKey: queryKeys.members(leagueId),
     queryFn: () => getMembers(leagueId),
   });
   // A new season game is my approved team against another in the active season.
   const seasons = useQuery({
-    queryKey: ['seasons', leagueId],
+    queryKey: queryKeys.seasons(leagueId),
     queryFn: () => getSeasons(leagueId),
     enabled: base === undefined,
   });
   const season = seasons.data?.find((s) => s.status === 'active');
   const teams = useQuery({
-    queryKey: ['teams', leagueId, season?.id],
+    queryKey: queryKeys.teams(leagueId, season?.id),
     queryFn: () => getTeams(leagueId, season!.id),
     enabled: season !== undefined,
   });
@@ -240,19 +243,15 @@ function RecordForm({ membership, correcting, drafts, onStartOver }: RecordFormP
           ? submitDraft(drafts, snapshot, () => submitGame(leagueId, body))
           : submitGame(leagueId, body),
     onSuccess: (game) => {
-      for (const queryKey of [
-        ['inbox', leagueId],
-        ['games', leagueId],
-        ['game', leagueId, game.id],
-      ]) {
-        void queryClient.invalidateQueries({ queryKey });
-      }
+      void afterGameWrite(queryClient, leagueId, game.id);
     },
-    // A new game is checked against the league's current rules, which may have changed since
-    // they were loaded; fetching them again lets the form show what the server found.
     onError: (error) => {
+      // A refused correction means the game moved on or its window closed.
+      if (base) void afterGameWrite(queryClient, leagueId, base.game.id);
+      // A new game is checked against the league's current rules, which may have changed since
+      // they were loaded; fetching them again lets the form show what the server found.
       if (!base && error instanceof ApiRequestError && error.code === 'RULES_VIOLATION') {
-        void queryClient.invalidateQueries({ queryKey: ['league', leagueId] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.league(leagueId) });
       }
     },
   });

@@ -2,6 +2,7 @@ import { type Season, scopeSeasonId, seasonScope, type StatsScope } from '@beer-
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { getSeasons } from './api/client';
+import { queryKeys } from './api/hooks';
 
 const SCOPES: Array<{ scope: StatsScope; label: string }> = [
   { scope: 'combined', label: 'Combined' },
@@ -12,7 +13,7 @@ const SCOPES: Array<{ scope: StatsScope; label: string }> = [
 // The seasons with stats to show: every one that has started, newest first.
 export function useStatsSeasons(leagueId: string): Season[] {
   const seasons = useQuery({
-    queryKey: ['seasons', leagueId],
+    queryKey: queryKeys.seasons(leagueId),
     queryFn: () => getSeasons(leagueId),
   });
   return (seasons.data ?? []).filter((s) => s.status !== 'draft');

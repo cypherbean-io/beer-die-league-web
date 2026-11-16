@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { StyleSheet, Text } from 'react-native';
 import { listGames } from './api/client';
+import { queryKeys } from './api/hooks';
 import { GameRow } from './game';
 import { Button } from './ui';
 
@@ -15,7 +16,7 @@ export function GameList({
   empty: string;
 }) {
   const games = useInfiniteQuery({
-    queryKey: ['games', leagueId, awaiting ?? 'all'],
+    queryKey: queryKeys.gameList(leagueId, awaiting),
     queryFn: ({ pageParam }) =>
       listGames(leagueId, {
         ...(pageParam && { before: pageParam }),
