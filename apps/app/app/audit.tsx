@@ -2,7 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { getAudit } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { describeEvent, participation } from '../src/auditText';
 import { Button } from '../src/ui';
 
@@ -18,7 +18,7 @@ export default function AuditLog() {
 
 function EventList({ leagueId }: { leagueId: string }) {
   const log = useInfiniteQuery({
-    queryKey: ['audit', leagueId],
+    queryKey: queryKeys.audit(leagueId),
     queryFn: ({ pageParam }) => getAudit(leagueId, pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextBefore ?? undefined,

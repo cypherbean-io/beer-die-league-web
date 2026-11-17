@@ -7,6 +7,7 @@ import { ApiRequestError, deleteAccount, requestDeletionCode, updateMe } from '.
 import {
   currentMembership,
   forgetSession,
+  queryKeys,
   useMe,
   useSignOut,
   useSignOutEverywhere,
@@ -175,9 +176,9 @@ function Settings({ membership }: { membership: MyMembership }) {
     mutationFn: updateMe,
     onSuccess: (me: MeResponse) => {
       setSaved(true);
-      queryClient.setQueryData(['me'], me);
+      queryClient.setQueryData(queryKeys.me, me);
       // Names appear on games, stats, and the member list.
-      void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'me' });
+      void queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== queryKeys.me[0] });
     },
   });
 

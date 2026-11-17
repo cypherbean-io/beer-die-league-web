@@ -4,7 +4,7 @@ import { Link, Redirect, Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { type ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { afterGameWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { isRefusal, kindLabel, refusalFor, RevisionView } from '../src/game';
 import { confirmNotice } from '../src/gameText';
 import { Button } from '../src/ui';
@@ -22,18 +22,20 @@ export default function Inbox() {
 function InboxList({ membership }: { membership: MyMembership }) {
   const { leagueId } = membership;
   const queryClient = useQueryClient();
-  const inbox = useQuery({ queryKey: ['inbox', leagueId], queryFn: () => getInbox(leagueId) });
+  const inbox = useQuery({
+    queryKey: queryKeys.inbox(leagueId),
+    queryFn: () => getInbox(leagueId),
+  });
   // Shown above the list, because the game it is about may have just left it.
   const [notice, setNotice] = useState<string | null>(null);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['inbox', leagueId] });
 
   const onConfirmed = (game: Game, revisionId: string) => {
     setNotice(confirmNotice(game, revisionId));
-    void refresh();
+    void afterGameWrite(queryClient, leagueId, game.id);
   };
-  const onRefused = (error: ApiRequestError) => {
+  const onRefused = (game: Game, error: ApiRequestError) => {
     setNotice(refusalFor(error));
-    void refresh();
+    void afterGameWrite(queryClient, leagueId, game.id);
   };
 
   const games = inbox.data ?? [];
@@ -88,7 +90,7 @@ type PendingGameProps = {
   game: Game;
   revision: GameRevision;
   onConfirmed: (game: Game, revisionId: string) => void;
-  onRefused: (error: ApiRequestError) => void;
+  onRefused: (game: Game, error: ApiRequestError) => void;
 };
 
 function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }: PendingGameProps) {
@@ -99,7 +101,7 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
     mutationFn: () => confirmRevision(leagueId, game.id, revision.id),
     onSuccess: (confirmed) => onConfirmed(confirmed, revision.id),
     onError: (error) => {
-      if (isRefusal(error)) onRefused(error);
+      if (isRefusal(error)) onRefused(game, error);
     },
   });
   const author = revision.players.find((p) => p.membershipId === revision.createdBy);

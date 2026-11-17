@@ -16,7 +16,7 @@ import {
   forceConfirm,
   getGame,
 } from '../../src/api/client';
-import { currentMembership, useMe } from '../../src/api/hooks';
+import { afterGameWrite, currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { describeEvent, participation } from '../../src/auditText';
 import {
   forcedOn,
@@ -56,22 +56,13 @@ function GameDetail({ membership, gameId }: { membership: MyMembership; gameId: 
   const { leagueId } = membership;
   const queryClient = useQueryClient();
   const detail = useQuery({
-    queryKey: ['game', leagueId, gameId],
+    queryKey: queryKeys.game(leagueId, gameId),
     queryFn: () => getGame(leagueId, gameId),
   });
   const [notice, setNotice] = useState<string | null>(null);
-  const refresh = () =>
-    Promise.all(
-      [
-        ['game', leagueId, gameId],
-        ['inbox', leagueId],
-        ['games', leagueId],
-        ['stats', leagueId],
-      ].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
-    );
   const done = (message: string) => {
     setNotice(message);
-    void refresh();
+    void afterGameWrite(queryClient, leagueId, gameId);
   };
   const refused = (error: unknown) => {
     if (isRefusal(error)) done(refusalFor(error));

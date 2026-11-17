@@ -19,7 +19,7 @@ import {
   setTeamRoster,
   type TeamAction,
 } from '../../src/api/client';
-import { currentMembership, useMe } from '../../src/api/hooks';
+import { afterTeamWrite, currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { playerName } from '../../src/gameText';
 import { Button } from '../../src/ui';
 
@@ -74,16 +74,12 @@ export default function Teams() {
   return <SeasonTeams membership={membership} seasonId={sid} />;
 }
 
-// Every write can change the season's teams and the league log.
+// Every write can change the season's teams, its standings, and the league log.
 function useTeamWrite<A>(leagueId: string, seasonId: string, write: (args: A) => Promise<Team>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: write,
-    onSettled: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['teams', leagueId, seasonId] }),
-        queryClient.invalidateQueries({ queryKey: ['audit', leagueId] }),
-      ]),
+    onSettled: () => afterTeamWrite(queryClient, leagueId, seasonId),
   });
 }
 
@@ -109,15 +105,15 @@ const joined = (team: Team) =>
 function SeasonTeams({ membership, seasonId }: { membership: MyMembership; seasonId: string }) {
   const { leagueId } = membership;
   const seasons = useQuery({
-    queryKey: ['seasons', leagueId],
+    queryKey: queryKeys.seasons(leagueId),
     queryFn: () => getSeasons(leagueId),
   });
   const teams = useQuery({
-    queryKey: ['teams', leagueId, seasonId],
+    queryKey: queryKeys.teams(leagueId, seasonId),
     queryFn: () => getTeams(leagueId, seasonId),
   });
   const members = useQuery({
-    queryKey: ['members', leagueId],
+    queryKey: queryKeys.members(leagueId),
     queryFn: () => getMembers(leagueId),
   });
   const season = seasons.data?.find((s) => s.id === seasonId);

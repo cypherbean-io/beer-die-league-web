@@ -4,7 +4,7 @@ import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ApiRequestError, getPlayerProfile } from '../../src/api/client';
-import { currentMembership, useMe } from '../../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { playerName } from '../../src/gameText';
 import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../../src/stats';
 
@@ -35,7 +35,7 @@ function Profile({ membership, membershipId }: { membership: MyMembership; membe
   const [scope, setScope] = useState<StatsScope>('combined');
   const seasons = useStatsSeasons(leagueId);
   const profile = useQuery({
-    queryKey: ['stats', leagueId, 'player', membershipId, scope],
+    queryKey: queryKeys.playerProfile(leagueId, membershipId, scope),
     queryFn: () => getPlayerProfile(leagueId, membershipId, scope),
   });
   const player = profile.data;
