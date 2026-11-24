@@ -17,7 +17,7 @@ import {
   startSeason,
   updateStandingsConfig,
 } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { afterSeasonWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { describeOrder, METRIC_LABELS } from '../src/standings';
 import { Button } from '../src/ui';
 
@@ -56,23 +56,19 @@ export default function Seasons() {
   return <SeasonList membership={membership} />;
 }
 
-// Every write can change the list and the league log.
+// Every write can change the list, the standings, and the league log.
 function useSeasonWrite<A>(leagueId: string, write: (args: A) => Promise<Season>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: write,
-    onSettled: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['seasons', leagueId] }),
-        queryClient.invalidateQueries({ queryKey: ['audit', leagueId] }),
-      ]),
+    onSettled: () => afterSeasonWrite(queryClient, leagueId),
   });
 }
 
 function SeasonList({ membership }: { membership: MyMembership }) {
   const { leagueId } = membership;
   const seasons = useQuery({
-    queryKey: ['seasons', leagueId],
+    queryKey: queryKeys.seasons(leagueId),
     queryFn: () => getSeasons(leagueId),
   });
   const commissioner = membership.role === 'commissioner';

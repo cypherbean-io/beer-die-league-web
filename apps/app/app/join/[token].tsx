@@ -3,8 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
-import { ApiRequestError, getMe, joinLeague } from '../../src/api/client';
-import { useMe } from '../../src/api/hooks';
+import { ApiRequestError, joinLeague } from '../../src/api/client';
+import { refreshMe, useMe } from '../../src/api/hooks';
 import { Button } from '../../src/ui';
 
 function messageFor(error: unknown): string {
@@ -30,7 +30,7 @@ export default function Join() {
     mutationFn: () => joinLeague(token, displayName),
     onSuccess: async () => {
       // Home reads the new pending membership from /me, so load it before going there.
-      await queryClient.fetchQuery({ queryKey: ['me'], queryFn: getMe });
+      await refreshMe(queryClient);
       router.replace('/');
     },
   });

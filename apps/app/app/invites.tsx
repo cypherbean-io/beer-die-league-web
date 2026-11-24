@@ -9,7 +9,7 @@ import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { createInvite, listInvites, revokeInvite } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { Button } from '../src/ui';
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
@@ -36,10 +36,10 @@ function InviteManager({ membership }: { membership: MyMembership }) {
   const parsed = CreateInviteBody.safeParse({ maxJoins: Number(maxJoinsText) });
   const maxJoins = maxJoinsText !== '' && parsed.success ? parsed.data.maxJoins : null;
   const invites = useQuery({
-    queryKey: ['invites', leagueId],
+    queryKey: queryKeys.invites(leagueId),
     queryFn: () => listInvites(leagueId),
   });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['invites', leagueId] });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.invites(leagueId) });
   const create = useMutation({
     mutationFn: (limit: number) => createInvite(leagueId, limit),
     onSuccess: (created) => setUrl(created.url),

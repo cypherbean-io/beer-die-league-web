@@ -12,7 +12,7 @@ import {
   removeMember,
   setMemberRole,
 } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { afterMemberWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { Button } from '../src/ui';
 
 type Action =
@@ -49,7 +49,7 @@ function MemberList({ membership }: { membership: MyMembership }) {
   // The member whose removal awaits a second tap, or 'leave' for the caller leaving.
   const [confirming, setConfirming] = useState<string | null>(null);
   const members = useQuery({
-    queryKey: ['members', leagueId],
+    queryKey: queryKeys.members(leagueId),
     queryFn: () => getMembers(leagueId),
   });
   const action = useMutation({
@@ -59,15 +59,11 @@ function MemberList({ membership }: { membership: MyMembership }) {
       if (a.kind === 'remove') return removeMember(leagueId, a.member.id);
       return setMemberRole(leagueId, a.member.id, a.role);
     },
-    // A role change can be the caller's own, which /me reflects. A removal voids games and
-    // changes teams, so everything is refetched.
+    // A removal voids games and changes teams, so everything is refetched.
     onSettled: (_data, _error, a) =>
       a.kind === 'remove'
         ? queryClient.invalidateQueries()
-        : Promise.all([
-            queryClient.invalidateQueries({ queryKey: ['members', leagueId] }),
-            queryClient.invalidateQueries({ queryKey: ['me'] }),
-          ]),
+        : afterMemberWrite(queryClient, leagueId),
   });
   // Once /me no longer lists the league, this screen redirects home.
   const leave = useMutation({

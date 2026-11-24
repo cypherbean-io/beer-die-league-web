@@ -10,7 +10,7 @@ import { Link, Redirect, Stack } from 'expo-router';
 import { Fragment, useState } from 'react';
 import { ScrollView, StyleSheet, Text, type TextStyle, View } from 'react-native';
 import { getPartnershipStats, getPlayerStats } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { playerName } from '../src/gameText';
 import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../src/stats';
 
@@ -62,11 +62,11 @@ function StatsTable({ membership }: { membership: MyMembership }) {
   const [scope, setScope] = useState<StatsScope>('combined');
   const seasons = useStatsSeasons(leagueId);
   const stats = useQuery({
-    queryKey: ['stats', leagueId, 'players', scope],
+    queryKey: queryKeys.playerStats(leagueId, scope),
     queryFn: () => getPlayerStats(leagueId, scope),
   });
   const pairStats = useQuery({
-    queryKey: ['stats', leagueId, 'partnerships', scope],
+    queryKey: queryKeys.partnershipStats(leagueId, scope),
     queryFn: () => getPartnershipStats(leagueId, scope),
   });
   const players = stats.data ?? [];

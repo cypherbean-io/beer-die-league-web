@@ -10,7 +10,7 @@ import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { ApiRequestError, getLeague, updateRules, updateSettings } from '../src/api/client';
-import { currentMembership, useMe } from '../src/api/hooks';
+import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { Button } from '../src/ui';
 
 function messageFor(error: unknown): string {
@@ -46,7 +46,10 @@ export default function LeagueSettingsScreen() {
 }
 
 function Editor({ leagueId }: { leagueId: string }) {
-  const league = useQuery({ queryKey: ['league', leagueId], queryFn: () => getLeague(leagueId) });
+  const league = useQuery({
+    queryKey: queryKeys.league(leagueId),
+    queryFn: () => getLeague(leagueId),
+  });
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -70,8 +73,8 @@ function useSave<P>(leagueId: string, send: (patch: P) => Promise<League>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: send,
-    onSuccess: (updated) => queryClient.setQueryData(['league', leagueId], updated),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['audit', leagueId] }),
+    onSuccess: (updated) => queryClient.setQueryData(queryKeys.league(leagueId), updated),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.audit(leagueId) }),
   });
 }
 

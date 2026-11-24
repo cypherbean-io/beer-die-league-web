@@ -3,11 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, Redirect, Stack } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { getHealth, getInbox, getLeague, getSeasons, getStandings } from '../src/api/client';
-import { currentMembership, useMe, useSignOut } from '../src/api/hooks';
+import { currentMembership, queryKeys, useMe, useSignOut } from '../src/api/hooks';
 import { rankLabel } from '../src/standings';
 
 export default function Home() {
-  const health = useQuery({ queryKey: ['health'], queryFn: getHealth });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: getHealth });
   const me = useMe();
   const signOut = useSignOut();
 
@@ -54,11 +54,11 @@ export default function Home() {
 
 function LeagueHome({ membership }: { membership: MyMembership }) {
   const league = useQuery({
-    queryKey: ['league', membership.leagueId],
+    queryKey: queryKeys.league(membership.leagueId),
     queryFn: () => getLeague(membership.leagueId),
   });
   const inbox = useQuery({
-    queryKey: ['inbox', membership.leagueId],
+    queryKey: queryKeys.inbox(membership.leagueId),
     queryFn: () => getInbox(membership.leagueId),
   });
   const rules = league.data?.rules;
@@ -136,12 +136,12 @@ const SNAPSHOT_ROWS = 3;
 
 function StandingsSnapshot({ leagueId }: { leagueId: string }) {
   const seasons = useQuery({
-    queryKey: ['seasons', leagueId],
+    queryKey: queryKeys.seasons(leagueId),
     queryFn: () => getSeasons(leagueId),
   });
   const season = seasons.data ? currentSeason(seasons.data) : null;
   const standings = useQuery({
-    queryKey: ['standings', leagueId, season?.id],
+    queryKey: queryKeys.seasonStandings(leagueId, season?.id),
     queryFn: () => getStandings(leagueId, season!.id),
     enabled: season !== null,
   });
