@@ -16,7 +16,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import {
   ApiRequestError,
   correctGame,
@@ -37,7 +37,8 @@ import {
   submitDraft,
 } from '../src/drafts';
 import { offersReview } from '../src/gameText';
-import { Button } from '../src/ui';
+import { Button, Text } from '../src/ui';
+import { colors, font, fonts } from '../src/theme';
 
 const MAX_LINE_VALUE = 99;
 
@@ -827,7 +828,7 @@ function Feedback({
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 16, maxWidth: 560 },
   section: { gap: 12 },
-  heading: { fontSize: 18, fontWeight: '700' },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700' },
   seat: { gap: 8, paddingVertical: 4 },
   name: { fontSize: 16, fontWeight: '600' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 16 },
@@ -838,15 +839,15 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#1d4ed8',
+    borderColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepText: { color: '#1d4ed8', fontSize: 24, fontWeight: '600' },
+  stepText: { color: colors.accent, fontSize: 24, fontWeight: '600' },
   value: { minWidth: 32, textAlign: 'center', fontSize: 22, fontWeight: '700' },
   disabled: { opacity: 0.4 },
   violations: { gap: 4 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
-  link: { color: '#1d4ed8', padding: 8 },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
+  link: { color: colors.accent, ...font(fonts.body, 600), padding: 8 },
 });

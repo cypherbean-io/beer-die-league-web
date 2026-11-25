@@ -2,12 +2,13 @@ import { type Game, type GameRevision, INBOX_MAX, type MyMembership } from '@bee
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { type ApiRequestError, confirmRevision, getInbox } from '../src/api/client';
 import { afterGameWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { isRefusal, kindLabel, refusalFor, RevisionView } from '../src/game';
 import { confirmNotice } from '../src/gameText';
-import { Button } from '../src/ui';
+import { Button, Screen, Text, textStyles } from '../src/ui';
+import { colors, font, fonts, space } from '../src/theme';
 
 export default function Inbox() {
   const me = useMe();
@@ -40,7 +41,7 @@ function InboxList({ membership }: { membership: MyMembership }) {
 
   const games = inbox.data ?? [];
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <Screen>
       <Stack.Screen options={{ title: 'Inbox' }} />
       <Text style={styles.muted}>
         Games you played in that are waiting for you to confirm the numbers.
@@ -80,7 +81,7 @@ function InboxList({ membership }: { membership: MyMembership }) {
             ]
           : [],
       )}
-    </ScrollView>
+    </Screen>
   );
 }
 
@@ -111,9 +112,10 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
 
   return (
     <View style={styles.game} testID="inbox-game">
-      <Text style={styles.muted}>
-        {kindLabel(game)}, played {new Date(revision.playedAt).toLocaleString()}
-      </Text>
+      <View style={styles.gameHead}>
+        <Text style={textStyles.kicker}>{kindLabel(game)}</Text>
+        <Text style={styles.muted}>{new Date(revision.playedAt).toLocaleString()}</Text>
+      </View>
       {revision.number > 1 && (
         <Text testID="inbox-corrected" style={styles.muted}>
           {reopened
@@ -158,10 +160,15 @@ function PendingGame({ leagueId, myId, game, revision, onConfirmed, onRefused }:
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 24, gap: 16, maxWidth: 560 },
-  game: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12, gap: 8 },
-  notice: { color: '#14532d' },
-  link: { color: '#1d4ed8', paddingVertical: 4 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  game: {
+    gap: space.md,
+    paddingBottom: space.xl,
+    borderBottomWidth: 1,
+    borderColor: colors.divider,
+  },
+  gameHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  notice: { color: colors.notice },
+  link: { color: colors.accent, ...font(fonts.body, 600), paddingVertical: 8, textAlign: 'center' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

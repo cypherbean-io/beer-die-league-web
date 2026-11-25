@@ -2,11 +2,13 @@ import type { MyMembership, PlayerStats, StatsScope } from '@beer-die/core';
 import { useQuery } from '@tanstack/react-query';
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { ApiRequestError, getPlayerProfile } from '../../src/api/client';
 import { currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { playerName } from '../../src/gameText';
 import { percent, perGame, ScopeTabs, scopeNote, useStatsSeasons } from '../../src/stats';
+import { Text } from '../../src/ui';
+import { colors, fonts } from '../../src/theme';
 
 const LINES: Array<{ label: string; value: (p: PlayerStats) => string }> = [
   { label: 'Games played', value: (p) => String(p.gamesPlayed) },
@@ -76,15 +78,15 @@ function Profile({ membership, membershipId }: { membership: MyMembership; membe
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 16, maxWidth: 480 },
-  title: { fontSize: 22, fontWeight: '700' },
+  title: { fontSize: 22, fontFamily: fonts.display, fontWeight: '700' },
   line: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: 6,
     borderBottomWidth: 1,
-    borderColor: '#eee',
+    borderColor: colors.divider,
   },
   value: { fontWeight: '600', fontVariant: ['tabular-nums'] },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

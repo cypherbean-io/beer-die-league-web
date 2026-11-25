@@ -2,7 +2,7 @@ import type { Member, MembershipRole, MyMembership } from '@beer-die/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import {
   ApiRequestError,
   approveMember,
@@ -13,7 +13,8 @@ import {
   setMemberRole,
 } from '../src/api/client';
 import { afterMemberWrite, currentMembership, queryKeys, useMe } from '../src/api/hooks';
-import { Button } from '../src/ui';
+import { Button, Text } from '../src/ui';
+import { colors, fonts } from '../src/theme';
 
 type Action =
   | { kind: 'approve'; member: Member }
@@ -204,12 +205,12 @@ function MemberList({ membership }: { membership: MyMembership }) {
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 12, maxWidth: 560 },
-  heading: { fontSize: 18, fontWeight: '700', marginTop: 8 },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700', marginTop: 8 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   member: { gap: 8 },
   confirm: { gap: 8, paddingLeft: 12 },
   grow: { flex: 1 },
   name: { fontSize: 16 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

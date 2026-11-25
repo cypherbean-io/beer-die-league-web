@@ -6,6 +6,8 @@
     "web": {
       "output": "single"
     },
-    "plugins": ["expo-router"]
+    "plugins": ["expo-router"],
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0D10"
   }
 }

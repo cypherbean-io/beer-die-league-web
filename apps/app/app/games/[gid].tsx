@@ -8,7 +8,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import {
   ApiRequestError,
   confirmRevision,
@@ -28,7 +28,8 @@ import {
   useNow,
 } from '../../src/game';
 import { confirmNotice, describeChange, diffRevisions, timeLeft } from '../../src/gameText';
-import { Button } from '../../src/ui';
+import { Button, Screen, Text } from '../../src/ui';
+import { colors, fonts, radius, space } from '../../src/theme';
 
 const formatTime = (iso: string) => new Date(iso).toLocaleString();
 
@@ -72,19 +73,19 @@ function GameDetail({ membership, gameId }: { membership: MyMembership; gameId: 
   if (detail.isError) {
     const missing = detail.error instanceof ApiRequestError && detail.error.status === 404;
     return (
-      <View style={styles.container}>
+      <Screen>
         <Stack.Screen options={{ title: 'Game' }} />
         <Text testID="game-unavailable" style={styles.error}>
           {missing
             ? 'This game doesn’t exist in your league.'
             : 'Couldn’t load the game. Check your connection and try again.'}
         </Text>
-      </View>
+      </Screen>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <Screen>
       <Stack.Screen options={{ title: 'Game' }} />
       {notice !== null && (
         <Text testID="game-notice" style={styles.notice}>
@@ -92,7 +93,7 @@ function GameDetail({ membership, gameId }: { membership: MyMembership; gameId: 
         </Text>
       )}
       <GameBody detail={detail.data} membership={membership} onDone={done} onRefused={refused} />
-    </ScrollView>
+    </Screen>
   );
 }
 
@@ -189,7 +190,7 @@ function GameBody({ detail, membership, onDone, onRefused }: BodyProps) {
       {revisions.length > 1 && <History revisions={revisions} />}
 
       {audit.length > 0 && (
-        <View style={styles.section} testID="game-log">
+        <View style={styles.panel} testID="game-log">
           <Text style={styles.subheading}>Commissioner actions</Text>
           {audit.map((event) => (
             <Text key={event.id} testID="game-log-entry">
@@ -402,7 +403,7 @@ function ForceConfirm({
 
 function History({ revisions }: { revisions: GameHistoryRevision[] }) {
   return (
-    <View style={styles.section} testID="game-history">
+    <View style={styles.panel} testID="game-history">
       <Text style={styles.subheading}>History</Text>
       {revisions.map((r, i) => {
         const author = r.players.find((p) => p.membershipId === r.createdBy)?.displayName;
@@ -429,16 +430,29 @@ function History({ revisions }: { revisions: GameHistoryRevision[] }) {
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 24, gap: 16, maxWidth: 560 },
-  section: { gap: 8 },
-  panel: { gap: 8, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12 },
-  row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  heading: { fontSize: 18, fontWeight: '700' },
-  subheading: { fontSize: 16, fontWeight: '700' },
-  entry: { gap: 2 },
-  change: { paddingLeft: 12 },
+  section: { gap: space.md },
+  panel: {
+    gap: space.md,
+    padding: space.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  row: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  heading: { fontSize: 26, fontFamily: fonts.display, fontWeight: '700', letterSpacing: 0.4 },
+  subheading: {
+    fontSize: 16,
+    fontFamily: fonts.display,
+    fontWeight: '600',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    color: colors.muted,
+  },
+  entry: { gap: 2, paddingVertical: space.xs },
+  change: { paddingLeft: space.md, color: colors.muted },
   name: { fontWeight: '600' },
-  notice: { color: '#14532d' },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  notice: { color: colors.notice },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

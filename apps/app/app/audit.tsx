@@ -1,10 +1,11 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { getAudit } from '../src/api/client';
 import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
 import { describeEvent, participation } from '../src/auditText';
-import { Button } from '../src/ui';
+import { Button, Text } from '../src/ui';
+import { colors } from '../src/theme';
 
 export default function AuditLog() {
   const me = useMe();
@@ -69,9 +70,9 @@ function EventList({ leagueId }: { leagueId: string }) {
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 12, maxWidth: 560 },
-  entry: { borderBottomWidth: 1, borderColor: '#ddd', paddingVertical: 8, gap: 2 },
+  entry: { borderBottomWidth: 1, borderColor: colors.border, paddingVertical: 8, gap: 2 },
   name: { fontWeight: '700' },
   change: { paddingLeft: 12 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

@@ -1,9 +1,10 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { listGames } from './api/client';
 import { queryKeys } from './api/hooks';
 import { GameRow } from './game';
-import { Button } from './ui';
+import { Button, Text } from './ui';
+import { colors } from './theme';
 
 // A league's games, newest first, a page at a time.
 export function GameList({
@@ -56,6 +57,6 @@ export function GameList({
 }
 
 const styles = StyleSheet.create({
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });
