@@ -1,7 +1,9 @@
 import { Redirect, Stack } from 'expo-router';
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { ScrollView, StyleSheet } from 'react-native';
 import { currentMembership, useMe } from '../src/api/hooks';
 import { GameList } from '../src/gameList';
+import { Text } from '../src/ui';
+import { colors } from '../src/theme';
 
 // Commissioners only: games sent for review because they break the league rules.
 export default function Overrides() {
@@ -28,5 +30,5 @@ export default function Overrides() {
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 12, maxWidth: 560 },
-  muted: { color: '#555' },
+  muted: { color: colors.muted },
 });

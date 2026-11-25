@@ -8,7 +8,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import {
   actOnTeam,
   ApiRequestError,
@@ -21,7 +21,8 @@ import {
 } from '../../src/api/client';
 import { afterTeamWrite, currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { playerName } from '../../src/gameText';
-import { Button } from '../../src/ui';
+import { Button, Text, TextInput } from '../../src/ui';
+import { colors, fonts } from '../../src/theme';
 
 function messageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -335,14 +336,20 @@ function RosterEditor({ ctx, team, onDone }: { ctx: Context; team: Team; onDone:
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 16, maxWidth: 560 },
   section: { gap: 8 },
-  card: { gap: 8, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12 },
-  heading: { fontSize: 18, fontWeight: '700' },
-  subheading: { fontSize: 16, fontWeight: '700', marginTop: 8 },
+  card: { gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 12 },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700' },
+  subheading: { fontSize: 16, fontFamily: fonts.display, fontWeight: '700', marginTop: 8 },
   name: { fontSize: 18, fontWeight: '600' },
   label: { fontSize: 16 },
-  input: { borderWidth: 1, borderColor: '#888', borderRadius: 8, padding: 10, fontSize: 18 },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 18,
+  },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   wrap: { flexWrap: 'wrap' },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

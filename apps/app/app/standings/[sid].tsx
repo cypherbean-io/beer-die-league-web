@@ -1,11 +1,13 @@
 import type { MyMembership, StandingsRow } from '@beer-die/core';
 import { useQuery } from '@tanstack/react-query';
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { ApiRequestError, getStandings } from '../../src/api/client';
 import { currentMembership, queryKeys, useMe } from '../../src/api/hooks';
 import { describeOrder, rankLabel } from '../../src/standings';
 import { percent } from '../../src/stats';
+import { Text } from '../../src/ui';
+import { colors, fonts } from '../../src/theme';
 
 type Column = { label: string; title: string; value: (row: StandingsRow) => string };
 
@@ -110,12 +112,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 6,
     borderBottomWidth: 1,
-    borderColor: '#eee',
+    borderColor: colors.divider,
   },
   rank: { width: 44, fontVariant: ['tabular-nums'] },
   team: { width: 150, paddingRight: 8 },
-  cell: { width: 56, textAlign: 'right', fontVariant: ['tabular-nums'] },
-  heading: { fontWeight: '700' },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  cell: {
+    width: 56,
+    textAlign: 'right',
+    fontFamily: fonts.display,
+    fontWeight: '600',
+    fontSize: 18,
+    fontVariant: ['tabular-nums'],
+  },
+  heading: { fontFamily: fonts.display, fontWeight: '700' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

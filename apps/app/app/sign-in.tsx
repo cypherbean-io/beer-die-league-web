@@ -2,9 +2,11 @@ import { RequestCodeBody, SignInCode } from '@beer-die/core';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { ApiRequestError, requestCode, verifyCode } from '../src/api/client';
 import { refreshMe } from '../src/api/hooks';
+import { Text, TextInput } from '../src/ui';
+import { colors, font, fonts } from '../src/theme';
 
 // An invite token (32 random bytes, base64url). Anything else in `?invite=` is ignored, so
 // the parameter can only ever lead back to a join screen.
@@ -126,10 +128,16 @@ export default function SignIn() {
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12, maxWidth: 420 },
   label: { fontSize: 16 },
-  input: { borderWidth: 1, borderColor: '#888', borderRadius: 8, padding: 12, fontSize: 18 },
-  button: { backgroundColor: '#1d4ed8', borderRadius: 8, padding: 14, alignItems: 'center' },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 18,
+  },
+  button: { backgroundColor: colors.accent, borderRadius: 8, padding: 14, alignItems: 'center' },
   disabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  error: { color: '#b91c1c' },
-  link: { color: '#1d4ed8', textAlign: 'center', padding: 8 },
+  buttonText: { color: colors.onAccent, fontSize: 16, fontWeight: '600' },
+  error: { color: colors.danger },
+  link: { color: colors.accent, ...font(fonts.body, 600), textAlign: 'center', padding: 8 },
 });

@@ -2,7 +2,7 @@ import { DisplayName, type MeResponse, type MyMembership, SignInCode } from '@be
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { ApiRequestError, deleteAccount, requestDeletionCode, updateMe } from '../src/api/client';
 import {
   currentMembership,
@@ -12,7 +12,8 @@ import {
   useSignOut,
   useSignOutEverywhere,
 } from '../src/api/hooks';
-import { Button } from '../src/ui';
+import { Button, Text, TextInput } from '../src/ui';
+import { colors, fonts } from '../src/theme';
 
 function settingsMessageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -242,13 +243,19 @@ function Settings({ membership }: { membership: MyMembership }) {
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 12, maxWidth: 560 },
-  heading: { fontSize: 18, fontWeight: '700', marginTop: 8 },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700', marginTop: 8 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   confirm: { gap: 8, paddingLeft: 12 },
   grow: { flex: 1 },
   section: { gap: 8 },
-  input: { borderWidth: 1, borderColor: '#999', borderRadius: 6, padding: 10, fontSize: 16 },
-  hint: { color: '#555' },
-  notice: { color: '#14532d' },
-  error: { color: '#b91c1c' },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 6,
+    padding: 10,
+    fontSize: 16,
+  },
+  hint: { color: colors.muted },
+  notice: { color: colors.notice },
+  error: { color: colors.danger },
 });

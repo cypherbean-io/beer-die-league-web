@@ -7,10 +7,11 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { createInvite, listInvites, revokeInvite } from '../src/api/client';
 import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
-import { Button } from '../src/ui';
+import { Button, Text, TextInput } from '../src/ui';
+import { colors, fonts } from '../src/theme';
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
 
@@ -110,12 +111,18 @@ function InviteManager({ membership }: { membership: MyMembership }) {
 
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 12, maxWidth: 560 },
-  heading: { fontSize: 18, fontWeight: '700', marginTop: 8 },
-  card: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12, gap: 8 },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700', marginTop: 8 },
+  card: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 12, gap: 8 },
   url: { fontFamily: 'monospace' },
-  input: { borderWidth: 1, borderColor: '#999', borderRadius: 6, padding: 10, fontSize: 16 },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 6,
+    padding: 10,
+    fontSize: 16,
+  },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   grow: { flex: 1 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });

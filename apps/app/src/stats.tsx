@@ -1,8 +1,10 @@
 import { type Season, scopeSeasonId, seasonScope, type StatsScope } from '@beer-die/core';
 import { useQuery } from '@tanstack/react-query';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { getSeasons } from './api/client';
 import { queryKeys } from './api/hooks';
+import { Text } from './ui';
+import { colors } from './theme';
 
 const SCOPES: Array<{ scope: StatsScope; label: string }> = [
   { scope: 'combined', label: 'Combined' },
@@ -78,12 +80,12 @@ const styles = StyleSheet.create({
   tabs: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   tab: {
     borderWidth: 1,
-    borderColor: '#1d4ed8',
+    borderColor: colors.accent,
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 14,
   },
-  selected: { backgroundColor: '#1d4ed8' },
-  tabText: { color: '#1d4ed8', fontWeight: '600' },
-  selectedText: { color: '#fff', fontWeight: '600' },
+  selected: { backgroundColor: colors.accent },
+  tabText: { color: colors.accent, fontWeight: '600' },
+  selectedText: { color: colors.onAccent, fontWeight: '600' },
 });

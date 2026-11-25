@@ -2,10 +2,11 @@ import { DisplayName } from '@beer-die/core';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { ApiRequestError, joinLeague } from '../../src/api/client';
 import { refreshMe, useMe } from '../../src/api/hooks';
-import { Button } from '../../src/ui';
+import { Button, Text, TextInput } from '../../src/ui';
+import { colors, font, fonts } from '../../src/theme';
 
 function messageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -90,8 +91,14 @@ export default function Join() {
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12, maxWidth: 420 },
   label: { fontSize: 16 },
-  input: { borderWidth: 1, borderColor: '#888', borderRadius: 8, padding: 12, fontSize: 18 },
-  hint: { color: '#555' },
-  error: { color: '#b91c1c' },
-  link: { color: '#1d4ed8', textAlign: 'center', padding: 8 },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 18,
+  },
+  hint: { color: colors.muted },
+  error: { color: colors.danger },
+  link: { color: colors.accent, ...font(fonts.body, 600), textAlign: 'center', padding: 8 },
 });

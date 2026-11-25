@@ -8,10 +8,11 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Stack } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { ApiRequestError, getLeague, updateRules, updateSettings } from '../src/api/client';
 import { currentMembership, queryKeys, useMe } from '../src/api/hooks';
-import { Button } from '../src/ui';
+import { Button, Text, TextInput } from '../src/ui';
+import { colors, fonts } from '../src/theme';
 
 function messageFor(error: unknown): string {
   if (error instanceof ApiRequestError) {
@@ -220,12 +221,18 @@ function NumberField({ id, label, value, onChange }: NumberFieldProps) {
 const styles = StyleSheet.create({
   container: { padding: 24, gap: 24, maxWidth: 560 },
   section: { gap: 12 },
-  heading: { fontSize: 18, fontWeight: '700' },
+  heading: { fontSize: 18, fontFamily: fonts.display, fontWeight: '700' },
   field: { gap: 4 },
   label: { fontSize: 16 },
-  input: { borderWidth: 1, borderColor: '#888', borderRadius: 8, padding: 10, fontSize: 18 },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 18,
+  },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   grow: { flex: 1 },
-  muted: { color: '#555' },
-  error: { color: '#b91c1c' },
+  muted: { color: colors.muted },
+  error: { color: colors.danger },
 });
