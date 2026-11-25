@@ -116,3 +116,24 @@ export function offersReview(
 export function playerName(player: { displayName: string; former: boolean }): string {
   return player.former ? `${player.displayName} (former member)` : player.displayName;
 }
+
+// A side's score: its players' points, sink points included.
+export const sideTotal = (revision: GameRevision, side: Side) =>
+  revision.players.filter((p) => p.side === side).reduce((sum, p) => sum + p.points, 0);
+
+// A season game's side goes by its team; an exhibition game's by its two players.
+export const sideName = (revision: GameRevision, side: Side) =>
+  revision.teams?.[side].name ??
+  revision.players
+    .filter((p) => p.side === side)
+    .map((p) => p.displayName)
+    .join(' & ');
+
+// Who has yet to confirm the revision, as a sentence; null once all four have.
+export function waitingOn(revision: GameRevision): string | null {
+  const names = revision.players.filter((p) => p.confirmation === null).map(playerName);
+  if (names.length === 0) return null;
+  const list =
+    names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `Waiting on ${list}.`;
+}

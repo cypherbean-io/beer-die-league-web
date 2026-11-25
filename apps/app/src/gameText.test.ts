@@ -6,7 +6,10 @@ import {
   diffRevisions,
   offersReview,
   playerName,
+  sideName,
+  sideTotal,
   timeLeft,
+  waitingOn,
 } from './gameText';
 
 const ANA = '0199f3a2-5c1e-7a00-8000-00000000000a';
@@ -215,5 +218,63 @@ describe('playerName', () => {
 
   it("leaves a member's name as it is", () => {
     expect(playerName({ displayName: 'Bo', former: false })).toBe('Bo');
+  });
+});
+
+describe('sideTotal', () => {
+  it("adds up a side's points", () => {
+    expect(sideTotal(revision(), 'A')).toBe(11);
+    expect(sideTotal(revision(), 'B')).toBe(9);
+  });
+});
+
+describe('sideName', () => {
+  it("names a season game's side by its team", () => {
+    const teams = {
+      A: { id: '0199f3a2-5c1e-7a00-8000-000000000201', name: 'Sharks' },
+      B: { id: '0199f3a2-5c1e-7a00-8000-000000000202', name: 'Jets' },
+    };
+    expect(sideName(revision({ teams }), 'B')).toBe('Jets');
+  });
+
+  it("names an exhibition game's side by its players", () => {
+    expect(sideName(revision(), 'A')).toBe('Ana & Bo');
+  });
+});
+
+describe('waitingOn', () => {
+  it('is everyone while nobody has confirmed', () => {
+    expect(waitingOn(revision())).toBe('Waiting on Ana, Bo, Cy and Di.');
+  });
+
+  it('leaves out players who confirmed, either way', () => {
+    const r = revision({
+      players: [
+        { ...player(ANA, 'Ana', 'A', 6), confirmation: 'player' },
+        { ...player(BO, 'Bo', 'A', 5), confirmation: 'forced' },
+        player(CY, 'Cy', 'B', 5),
+        player(DI, 'Di', 'B', 4),
+      ],
+    });
+    expect(waitingOn(r)).toBe('Waiting on Cy and Di.');
+  });
+
+  it('names a lone holdout, marking a former member', () => {
+    const r = revision({
+      players: [
+        { ...player(ANA, 'Ana', 'A', 6), confirmation: 'player' },
+        { ...player(BO, 'Bo', 'A', 5), confirmation: 'player' },
+        { ...player(CY, 'Cy', 'B', 5), confirmation: 'player' },
+        { ...player(DI, 'Di', 'B', 4), former: true },
+      ],
+    });
+    expect(waitingOn(r)).toBe('Waiting on Di (former member).');
+  });
+
+  it('is null once all four have confirmed', () => {
+    const r = revision({
+      players: revision().players.map((p) => ({ ...p, confirmation: 'player' as const })),
+    });
+    expect(waitingOn(r)).toBeNull();
   });
 });
